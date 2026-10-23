@@ -6,9 +6,11 @@ import { encryptToken } from '@/lib/encryption'
 export async function GET(request: NextRequest) {
   const requestUrl = new URL(request.url)
   const host = request.headers.get('host') || 'localhost:3001'
-  const origin = host.startsWith('localhost')
-    ? `http://${host}`
-    : `${request.headers.get('x-forwarded-proto') || 'https'}://${host}`
+  const origin =
+    process.env.NEXT_PUBLIC_SITE_URL?.trim().replace(/\/$/, '') ||
+    (host.startsWith('localhost')
+      ? `http://${host}`
+      : `${request.headers.get('x-forwarded-proto') || 'https'}://${host}`)
 
   const code = requestUrl.searchParams.get('code')
   const state = requestUrl.searchParams.get('state')

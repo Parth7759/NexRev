@@ -6,9 +6,11 @@ import { verifyWorkspaceMembership } from '@/lib/workspace'
 export async function GET(request: NextRequest) {
   const requestUrl = new URL(request.url)
   const host = request.headers.get('host') || 'localhost:3001'
-  const origin = host.startsWith('localhost')
-    ? `http://${host}`
-    : `${request.headers.get('x-forwarded-proto') || 'https'}://${host}`
+  const origin =
+    process.env.NEXT_PUBLIC_SITE_URL?.trim().replace(/\/$/, '') ||
+    (host.startsWith('localhost')
+      ? `http://${host}`
+      : `${request.headers.get('x-forwarded-proto') || 'https'}://${host}`)
 
   // 1. Verify user authentication
   const supabase = await createClient()

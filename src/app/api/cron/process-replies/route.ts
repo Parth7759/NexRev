@@ -27,7 +27,14 @@ async function handleCronExecution(request: NextRequest) {
   const url = new URL(request.url)
   const querySecret = url.searchParams.get('secret')
 
-  // Enforce CRON_SECRET authorization when configured
+  // Enforce CRON_SECRET authorization: strictly required in production
+  if (process.env.NODE_ENV === 'production' && (!cronSecret || cronSecret.trim() === '')) {
+    return NextResponse.json(
+      { success: false, error: 'Server misconfiguration: CRON_SECRET must be configured in production.' },
+      { status: 500 }
+    )
+  }
+
   if (cronSecret && cronSecret.trim() !== '') {
     const isHeaderValid = authHeader === `Bearer ${cronSecret}`
     const isQueryValid = querySecret === cronSecret
