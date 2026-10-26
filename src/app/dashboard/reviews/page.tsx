@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
+import Link from "next/link";
 import {
   Star,
   Sparkles,
@@ -13,7 +14,9 @@ import {
   Search,
   X,
   RefreshCw,
+  ArrowRight,
 } from "lucide-react";
+import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -26,6 +29,7 @@ import { createClient } from "@/utils/supabase/client";
 import { useWorkspace } from "@/contexts/workspace-context";
 import { useLocation } from "@/contexts/location-context";
 import { LocationSelector } from "@/components/location/location-selector";
+import { ContextualHelp } from "@/components/ui/contextual-help";
 
 export interface ReviewItem {
   id: string;
@@ -101,7 +105,7 @@ interface LiveReviewRow {
   source: string;
   workspace_id: string;
   location_id: string | null;
-  locations: { id: string; name: string; address: string | null } | { id: string; name: string; address: string | null }[] | null;
+  locations: { id: string; name: string; address: string | null; is_connected?: boolean } | { id: string; name: string; address: string | null; is_connected?: boolean }[] | null;
   review_replies: { id: string; content: string; status?: string; created_at: string }[] | null;
 }
 
@@ -173,7 +177,7 @@ export default function ReviewsPage() {
               source,
               workspace_id,
               location_id,
-              locations (id, name, address),
+              locations (id, name, address, is_connected),
               review_replies (id, content, status, created_at)
             `)
             .eq("workspace_id", wsId)
@@ -186,7 +190,13 @@ export default function ReviewsPage() {
           }
 
           if (liveReviews && liveReviews.length > 0) {
-            const formatted: ReviewItem[] = (liveReviews as unknown as LiveReviewRow[]).map((r) => {
+            // Requirement 5 & 6: Only display reviews for the active connected business profile
+            const activeProfileReviews = (liveReviews as unknown as LiveReviewRow[]).filter((r) => {
+              const loc = Array.isArray(r.locations) ? r.locations[0] : r.locations;
+              return loc ? loc.is_connected === true : r.source === "manual";
+            });
+
+            const formatted: ReviewItem[] = activeProfileReviews.map((r) => {
               const loc = Array.isArray(r.locations) ? r.locations[0] : r.locations;
               const resolvedLocName = loc?.name || (r.source === "google" ? "Google Business" : "Unassigned");
               const resolvedLocId = r.location_id || loc?.id || null;
@@ -213,7 +223,7 @@ export default function ReviewsPage() {
               };
             });
 
-            setReviews(formatted);
+            setReviews(formatted.length > 0 ? formatted : sampleDemoReviews);
           } else {
             setReviews(sampleDemoReviews);
           }
@@ -235,7 +245,7 @@ export default function ReviewsPage() {
   }, [contextWsId, refreshCounter]);
 
   const handleSyncReviews = async () => {
-    if (!activeWorkspaceId) return;
+    if (!activeWorkspaceId || !selectedLocationId) return;
     setIsSyncingReviews(true);
     setSyncNotice(null);
     setErrorMessage(null);
@@ -267,18 +277,13 @@ export default function ReviewsPage() {
     return map;
   }, [reviews]);
 
-  // Total unique reviews count
-  const totalReviewsCount = useMemo(() => new Set(reviews.map((r) => r.id)).size, [reviews]);
-
   // Filter reviews strictly by location, rating, status, and search query
   const filteredReviews = useMemo(() => {
+    if (!selectedLocationId) return [];
     return reviews.filter((review) => {
       // 1. Business Location filter:
-      if (selectedLocationId !== "all") {
-        // Enforce exact location ID matching
-        if (review.locationId !== selectedLocationId) {
-          return false;
-        }
+      if (review.locationId !== selectedLocationId) {
+        return false;
       }
 
       // 2. Rating filter:
@@ -458,7 +463,7 @@ export default function ReviewsPage() {
           <p className="text-slate-500 text-sm">
             {selectedLocation
               ? `Managing feedback for ${selectedLocation.name}`
-              : "Showing reviews across all authorized business locations."}
+              : "Connect your Google Business Profile to manage customer reviews."}
           </p>
         </div>
 
@@ -467,9 +472,8 @@ export default function ReviewsPage() {
           {/* Business / Location Selector */}
           <LocationSelector
             counts={countsByLocation}
-            totalCount={totalReviewsCount}
+            totalCount={selectedLocationId ? countsByLocation[selectedLocationId] ?? filteredReviews.length : 0}
             className="w-[200px]"
-            showAllOption={true}
           />
 
           {/* Search Reviews */}
@@ -533,6 +537,18 @@ export default function ReviewsPage() {
         </div>
       </div>
 
+      {/* Contextual Help Banner */}
+      <ContextualHelp
+        pageTitle="Reviews & AI Reply Studio"
+        dataType="hybrid"
+        summary="Manage customer feedback with AI reply drafting across 4 tones. Real reviews are synced with Google, while sample reviews remain in a safe local demo sandbox."
+        proTips={[
+          "Draft replies are held safely until explicitly published by an authorized team member.",
+          "Critical negative reviews (1-3 stars) are locked to manual approval by default in Settings.",
+          "Demo review drafts are strictly local and will never write to live customer records or post to Google.",
+        ]}
+      />
+
       {/* Sync Success Feedback Notice */}
       {syncNotice && (
         <div className="bg-green-50 border border-green-200 text-green-900 px-4 py-2.5 rounded-xl flex items-center justify-between text-xs animate-in fade-in-0 duration-150">
@@ -581,7 +597,29 @@ export default function ReviewsPage() {
       )}
 
       {/* Main 2-Column Split: Inbox List + Selected Review/Reply Panel */}
-      <div className="grid lg:grid-cols-3 gap-6 flex-1 min-h-0 lg:h-[calc(100vh-14rem)] lg:min-h-[580px]">
+      {!isLoadingReviews && !selectedLocation ? (
+        <Card className="border-slate-200/90 bg-white shadow-sm p-8 sm:p-14 text-center rounded-2xl">
+          <div className="mx-auto w-14 h-14 rounded-2xl bg-slate-100 text-slate-700 flex items-center justify-center mb-4 ring-8 ring-slate-50">
+            <Building2 className="w-7 h-7" />
+          </div>
+          <h3 className="text-xl font-bold text-slate-900 tracking-tight">
+            Select a Business Profile to Continue
+          </h3>
+          <p className="text-sm text-slate-500 mt-2 max-w-md mx-auto leading-relaxed">
+            Please select an active Google Business Profile for this workspace to view, manage, and respond to customer reviews.
+          </p>
+          <div className="mt-6 flex items-center justify-center gap-3">
+            <Link href="/dashboard/locations?select_profile=1">
+              <Button className="bg-slate-900 hover:bg-slate-800 text-white shadow-xs gap-2 px-4 h-10 font-medium">
+                <Building2 className="w-4 h-4" />
+                Select Business Profile
+                <ArrowRight className="w-4 h-4 ml-1" />
+              </Button>
+            </Link>
+          </div>
+        </Card>
+      ) : (
+        <div className="grid lg:grid-cols-3 gap-6 flex-1 min-h-0 lg:h-[calc(100vh-14rem)] lg:min-h-[580px]">
         {/* Left Column: Review Inbox List */}
         <div className="lg:col-span-1 bg-white border border-slate-200 rounded-xl overflow-hidden flex flex-col shadow-sm max-h-[400px] sm:max-h-[460px] lg:max-h-full">
           <div className="p-4 border-b border-slate-100 bg-slate-50 flex items-center justify-between shrink-0">
@@ -841,16 +879,16 @@ export default function ReviewsPage() {
                         size="sm"
                         onClick={handleGenerateReply}
                         disabled={isGenerating}
-                        className="border-blue-200 text-blue-700 hover:bg-blue-50 text-xs"
+                        className="border border-slate-200 bg-white text-slate-800 hover:bg-slate-50 shadow-2xs font-medium text-xs h-9 px-3"
                       >
                         {isGenerating ? (
                           <>
-                            <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                            <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin text-slate-700" />
                             Generating with AI...
                           </>
                         ) : (
                           <>
-                            <Sparkles className="w-3.5 h-3.5 mr-1.5 text-blue-600" />
+                            <Sparkles className="w-3.5 h-3.5 mr-1.5 text-slate-800" />
                             Generate AI Reply
                           </>
                         )}
@@ -863,7 +901,7 @@ export default function ReviewsPage() {
                           size="sm"
                           onClick={handleSaveDraft}
                           disabled={isSaving || !replyText.trim()}
-                          className="border-slate-300 text-slate-700 hover:bg-slate-100 text-xs shadow-sm"
+                          className="border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 shadow-2xs font-medium text-xs h-9 px-3"
                           title="Save this reply as a draft without publishing to Google"
                         >
                           Save Draft
@@ -874,7 +912,7 @@ export default function ReviewsPage() {
                           size="sm"
                           onClick={handleSaveReply}
                           disabled={isSaving || !replyText.trim()}
-                          className="bg-blue-600 hover:bg-blue-700 text-white shadow-sm text-xs"
+                          className="bg-slate-900 hover:bg-slate-800 text-white shadow-xs font-medium text-xs h-9 px-3.5"
                           title="Approve and publish reply directly to Google Business Profile"
                         >
                           {isSaving ? (
@@ -908,6 +946,7 @@ export default function ReviewsPage() {
           )}
         </div>
       </div>
-    </div>
-  );
+    )}
+  </div>
+);
 }

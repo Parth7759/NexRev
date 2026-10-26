@@ -345,3 +345,224 @@ export async function setActiveWorkspaceAction(
     return { success: false, error: msg }
   }
 }
+
+export interface UserProfileInfo {
+  id: string
+  email: string
+  fullName: string
+  initials: string
+  role: string
+  isSuperAdmin: boolean
+}
+
+/**
+ * Server Action: Fetches authenticated user profile, active workspace role, and super admin status.
+ */
+export async function getCurrentUserProfileAction(
+  workspaceId?: string | null
+): Promise<{ success: boolean; user?: UserProfileInfo; error?: string }> {
+  try {
+    const supabase = await createClient()
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+
+    if (authError || !user) {
+      return { success: false, error: 'Not authenticated.' }
+    }
+
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('full_name, email')
+      .eq('id', user.id)
+      .maybeSingle()
+
+    let role = 'Member'
+    if (workspaceId) {
+      const { data: member } = await supabase
+        .from('workspace_members')
+        .select('role')
+        .eq('workspace_id', workspaceId)
+        .eq('user_id', user.id)
+        .maybeSingle()
+      if (member?.role) {
+        role = member.role.charAt(0).toUpperCase() + member.role.slice(1)
+      }
+    }
+
+    const superAdminEmails = (process.env.SUPER_ADMIN_EMAILS || 'admin@nexrep.com')
+      .split(',')
+      .map((e) => e.trim().toLowerCase())
+
+    const isSuperAdmin =
+      user.app_metadata?.role === 'superadmin' ||
+      superAdminEmails.includes(user.email?.toLowerCase() || '')
+
+    const fullName = profile?.full_name || user.email?.split('@')[0] || 'User'
+    const initials =
+      fullName
+        .split(' ')
+        .map((p: string) => p[0])
+        .join('')
+        .slice(0, 2)
+        .toUpperCase() || 'NR'
+
+    return {
+      success: true,
+      user: {
+        id: user.id,
+        email: user.email || '',
+        fullName,
+        initials,
+        role,
+        isSuperAdmin,
+      },
+    }
+  } catch (err: unknown) {
+    return { success: false, error: err instanceof Error ? err.message : 'Failed to load profile.' }
+  }
+}
+
+/**
+ * Server Action: Signs out the current user session.
+ */
+export async function signOutAction(): Promise<{ success: boolean }> {
+  try {
+    const supabase = await createClient()
+    await supabase.auth.signOut()
+    revalidatePath('/', 'layout')
+    return { success: true }
+  } catch {
+    return { success: false }
+  }
+}
+
+export interface DashboardNotificationItem {
+  id: string
+  title: string
+  message: string
+  timestamp: string
+  type: 'review' | 'draft' | 'profile' | 'team' | 'system'
+  link: string
+}
+
+/**
+ * Server Action: Aggregates real operational notifications for the active workspace.
+ */
+export async function getDashboardNotificationsAction(
+  workspaceId?: string | null
+): Promise<{ success: boolean; notifications: DashboardNotificationItem[] }> {
+  if (!workspaceId) {
+    return {
+      success: true,
+      notifications: [
+        {
+          id: 'no-workspace',
+          title: 'Workspace Onboarding',
+          message: 'Create or select a workspace to manage Google reviews.',
+          timestamp: 'Just now',
+          type: 'system',
+          link: '/dashboard',
+        },
+      ],
+    }
+  }
+
+  try {
+    const supabase = await createClient()
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    if (authError || !user) {
+      return { success: false, notifications: [] }
+    }
+
+    const membership = await verifyWorkspaceMembership(supabase, workspaceId)
+    if (!membership.isMember) {
+      return { success: false, notifications: [] }
+    }
+
+    const notifications: DashboardNotificationItem[] = []
+
+    // 1. Check connected locations
+    const { data: locations } = await supabase
+      .from('locations')
+      .select('id, name, is_connected')
+      .eq('workspace_id', workspaceId)
+      .eq('is_connected', true)
+
+    if (!locations || locations.length === 0) {
+      notifications.push({
+        id: 'no-location',
+        title: 'No Business Profile Connected',
+        message: 'Link your Google Business Profile to begin syncing live customer reviews.',
+        timestamp: 'Important',
+        type: 'profile',
+        link: '/dashboard/locations',
+      })
+    } else {
+      // 2. Check for unanswered reviews
+      const { data: unanswered } = await supabase
+        .from('reviews')
+        .select('id, author_name, rating, review_date')
+        .eq('workspace_id', workspaceId)
+        .eq('status', 'unanswered')
+        .order('review_date', { ascending: false })
+        .limit(3)
+
+      if (unanswered && unanswered.length > 0) {
+        for (const rev of unanswered) {
+          notifications.push({
+            id: `rev-${rev.id}`,
+            title: `Unanswered ${rev.rating}-Star Review`,
+            message: `${rev.author_name} left a review awaiting reply.`,
+            timestamp: new Date(rev.review_date).toLocaleDateString(),
+            type: 'review',
+            link: '/dashboard/reviews',
+          })
+        }
+      }
+
+      // 3. Check for draft replies awaiting review
+      const { data: drafts } = await supabase
+        .from('review_replies')
+        .select('id, content, created_at')
+        .eq('workspace_id', workspaceId)
+        .eq('status', 'draft')
+        .order('created_at', { ascending: false })
+        .limit(2)
+
+      if (drafts && drafts.length > 0) {
+        notifications.push({
+          id: `drafts-pending`,
+          title: 'AI Reply Drafts Ready',
+          message: `${drafts.length} review reply draft${drafts.length === 1 ? '' : 's'} ready for your team review.`,
+          timestamp: 'Ready',
+          type: 'draft',
+          link: '/dashboard/reviews',
+        })
+      }
+    }
+
+    // 4. Check pending invitations
+    const { data: invites } = await supabase
+      .from('workspace_invitations')
+      .select('id, email, created_at')
+      .eq('workspace_id', workspaceId)
+      .order('created_at', { ascending: false })
+      .limit(1)
+
+    if (invites && invites.length > 0) {
+      notifications.push({
+        id: `invite-${invites[0].id}`,
+        title: 'Pending Team Invitation',
+        message: `Invitation pending for ${invites[0].email}.`,
+        timestamp: new Date(invites[0].created_at).toLocaleDateString(),
+        type: 'team',
+        link: '/dashboard/team',
+      })
+    }
+
+    return { success: true, notifications }
+  } catch (e) {
+    console.warn('Error fetching notifications:', e)
+    return { success: true, notifications: [] }
+  }
+}
+

@@ -11,6 +11,11 @@ const montserrat = Montserrat({
 export const metadata: Metadata = {
   title: "NexRep - Smarter Reviews. Stronger Reputation.",
   description: "Manage your Google Business Profile reviews across all locations from one intelligent, unified dashboard.",
+  icons: {
+    icon: "/assets/branding/favicon.svg",
+    shortcut: "/assets/branding/favicon.svg",
+    apple: "/assets/branding/nexrep-icon.svg",
+  },
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

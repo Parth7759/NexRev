@@ -16,8 +16,8 @@ export interface BusinessLocation {
 
 interface LocationContextType {
   locations: BusinessLocation[]
-  selectedLocationId: string
-  setSelectedLocationId: (id: string) => void
+  selectedLocationId: string | null
+  setSelectedLocationId: (id: string | null) => void
   selectedLocation: BusinessLocation | null
   isLoadingLocations: boolean
   refreshLocations: () => Promise<void>
@@ -27,13 +27,12 @@ interface LocationContextType {
 
 const LocationContext = createContext<LocationContextType | undefined>(undefined)
 
-const STORAGE_KEY_PREFIX = "nexrep_selected_location_"
 const HIDE_ZERO_STORAGE_KEY = "nexrep_hide_zero_reviews"
 
 export function LocationProvider({ children }: { children: React.ReactNode }) {
   const { activeWorkspaceId } = useWorkspace()
   const [locations, setLocations] = useState<BusinessLocation[]>([])
-  const [selectedLocationId, setSelectedLocationIdState] = useState<string>("all")
+  const [selectedLocationId, setSelectedLocationIdState] = useState<string | null>(null)
   const [isLoadingLocations, setIsLoadingLocations] = useState<boolean>(true)
 
   // Initialize hideZeroReviews lazily from session storage without setState in effect
@@ -58,7 +57,7 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
   const fetchLocations = useCallback(async (wsId: string | null) => {
     if (!wsId) {
       setLocations([])
-      setSelectedLocationIdState("all")
+      setSelectedLocationIdState(null)
       setIsLoadingLocations(false)
       return
     }
@@ -70,39 +69,42 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
         .from("locations")
         .select("id, name, address, phone, google_place_id, google_location_id, is_connected")
         .eq("workspace_id", wsId)
+        .eq("is_connected", true)
         .order("name", { ascending: true })
 
-      if (error) {
-        console.error("Error fetching locations:", error.message)
-        setLocations([])
-      } else {
-        const locs: BusinessLocation[] = (data || []).map((l) => ({
-          id: l.id,
-          name: l.name,
-          address: l.address,
-          phone: l.phone,
-          google_place_id: l.google_place_id,
-          google_location_id: l.google_location_id,
-          is_connected: Boolean(l.is_connected),
-        }))
-        setLocations(locs)
-
-        // Restore previously selected location from session storage if valid
-        const storageKey = `${STORAGE_KEY_PREFIX}${wsId}`
-        const savedId = typeof window !== "undefined" ? sessionStorage.getItem(storageKey) : null
-
-        if (savedId && (savedId === "all" || locs.some((loc) => loc.id === savedId))) {
-          setSelectedLocationIdState(savedId)
-        } else if (locs.length === 1) {
-          // If only 1 location exists, default to that location
-          setSelectedLocationIdState(locs[0].id)
-        } else {
-          // Default to all
-          setSelectedLocationIdState("all")
+      if (error || !data || data.length === 0) {
+        if (error) {
+          console.error("Error fetching locations:", error.message)
         }
+        setLocations([])
+        setSelectedLocationIdState(null)
+      } else if (data.length > 1) {
+        // Multiple locations are marked connected (unselected or ambiguous state).
+        // Requirement 1 & 3: Fail closed. Do NOT pick a default profile. Require explicit user selection.
+        console.warn(
+          `[LocationContext] Workspace ${wsId} has ${data.length} connected locations. Requiring explicit profile selection.`
+        )
+        setLocations([])
+        setSelectedLocationIdState(null)
+      } else {
+        // Exactly ONE business profile is explicitly selected and connected for this workspace
+        const singleLoc: BusinessLocation = {
+          id: data[0].id,
+          name: data[0].name,
+          address: data[0].address,
+          phone: data[0].phone,
+          google_place_id: data[0].google_place_id,
+          google_location_id: data[0].google_location_id,
+          is_connected: Boolean(data[0].is_connected),
+        }
+
+        setLocations([singleLoc])
+        setSelectedLocationIdState(singleLoc.id)
       }
     } catch (err) {
       console.error("Failed to refresh locations:", err)
+      setLocations([])
+      setSelectedLocationIdState(null)
     } finally {
       setIsLoadingLocations(false)
     }
@@ -115,7 +117,7 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
       if (!activeWorkspaceId) {
         if (isMounted) {
           setLocations([])
-          setSelectedLocationIdState("all")
+          setSelectedLocationIdState(null)
           setIsLoadingLocations(false)
         }
         return
@@ -127,39 +129,44 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
           .from("locations")
           .select("id, name, address, phone, google_place_id, google_location_id, is_connected")
           .eq("workspace_id", activeWorkspaceId)
+          .eq("is_connected", true)
           .order("name", { ascending: true })
 
         if (!isMounted) return
 
-        if (error) {
-          console.error("Error fetching locations:", error.message)
-          setLocations([])
-        } else {
-          const locs: BusinessLocation[] = (data || []).map((l) => ({
-            id: l.id,
-            name: l.name,
-            address: l.address,
-            phone: l.phone,
-            google_place_id: l.google_place_id,
-            google_location_id: l.google_location_id,
-            is_connected: Boolean(l.is_connected),
-          }))
-          setLocations(locs)
-
-          const storageKey = `${STORAGE_KEY_PREFIX}${activeWorkspaceId}`
-          const savedId = typeof window !== "undefined" ? sessionStorage.getItem(storageKey) : null
-
-          if (savedId && (savedId === "all" || locs.some((loc) => loc.id === savedId))) {
-            setSelectedLocationIdState(savedId)
-          } else if (locs.length === 1) {
-            setSelectedLocationIdState(locs[0].id)
-          } else {
-            setSelectedLocationIdState("all")
+        if (error || !data || data.length === 0) {
+          if (error) {
+            console.error("Error fetching locations:", error.message)
           }
+          setLocations([])
+          setSelectedLocationIdState(null)
+        } else if (data.length > 1) {
+          // Multiple locations connected: require explicit selection. No automatic choice.
+          console.warn(
+            `[LocationContext] Workspace ${activeWorkspaceId} has ${data.length} connected locations. Requiring explicit selection.`
+          )
+          setLocations([])
+          setSelectedLocationIdState(null)
+        } else {
+          // Exactly ONE explicitly selected profile
+          const singleLoc: BusinessLocation = {
+            id: data[0].id,
+            name: data[0].name,
+            address: data[0].address,
+            phone: data[0].phone,
+            google_place_id: data[0].google_place_id,
+            google_location_id: data[0].google_location_id,
+            is_connected: Boolean(data[0].is_connected),
+          }
+
+          setLocations([singleLoc])
+          setSelectedLocationIdState(singleLoc.id)
         }
       } catch (err) {
         if (!isMounted) return
         console.error("Failed to load locations:", err)
+        setLocations([])
+        setSelectedLocationIdState(null)
       } finally {
         if (isMounted) setIsLoadingLocations(false)
       }
@@ -177,17 +184,22 @@ export function LocationProvider({ children }: { children: React.ReactNode }) {
   }, [fetchLocations, activeWorkspaceId])
 
   const setSelectedLocationId = useCallback(
-    (id: string) => {
-      setSelectedLocationIdState(id)
-      if (typeof window !== "undefined" && activeWorkspaceId) {
-        sessionStorage.setItem(`${STORAGE_KEY_PREFIX}${activeWorkspaceId}`, id)
+    (id: string | null) => {
+      if (!id || id === "all") {
+        setSelectedLocationIdState(null)
+        return
+      }
+      if (locations.some((l) => l.id === id)) {
+        setSelectedLocationIdState(id)
+      } else {
+        setSelectedLocationIdState(null)
       }
     },
-    [activeWorkspaceId]
+    [locations]
   )
 
   const selectedLocation = useMemo(() => {
-    if (selectedLocationId === "all") return null
+    if (!selectedLocationId) return null
     return locations.find((l) => l.id === selectedLocationId) || null
   }, [locations, selectedLocationId])
 

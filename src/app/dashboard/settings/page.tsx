@@ -21,10 +21,14 @@ import {
   CheckCircle2,
   AlertCircle,
   Lock,
+  RotateCcw,
+  Sparkles,
 } from "lucide-react";
+import { useTour } from "@/contexts/tour-context";
 
 export default function SettingsPage() {
   const { activeWorkspaceId, activeWorkspace } = useWorkspace();
+  const { restartTour, isCompleted } = useTour();
   const [isLoading, setIsLoading] = useState(true);
   const [userRole, setUserRole] = useState<string | null>(null);
 
@@ -178,7 +182,7 @@ export default function SettingsPage() {
                   <Button
                     type="submit"
                     disabled={isSavingProfile || !fullName.trim()}
-                    className="bg-blue-600 hover:bg-blue-700 text-white text-xs h-9"
+                    className="bg-slate-900 hover:bg-slate-800 text-white text-xs font-medium h-9 px-4 shadow-xs"
                   >
                     {isSavingProfile ? (
                       <>
@@ -398,7 +402,7 @@ export default function SettingsPage() {
                     <Button
                       type="submit"
                       disabled={isSavingSettings}
-                      className="bg-blue-600 hover:bg-blue-700 text-white text-xs h-9 shadow-sm"
+                      className="bg-slate-900 hover:bg-slate-800 text-white text-xs font-medium h-9 px-4 shadow-xs"
                     >
                       {isSavingSettings ? (
                         <>
@@ -412,6 +416,57 @@ export default function SettingsPage() {
                   </div>
                 )}
               </form>
+            </CardContent>
+          </Card>
+
+          {/* 3. Onboarding & Product Tour Card */}
+          <Card className="border-slate-200 bg-white shadow-xs">
+            <CardHeader className="pb-3 border-b border-slate-100">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-700 flex items-center justify-center shrink-0">
+                    <Sparkles className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <CardTitle className="text-base font-semibold">Onboarding & Guided Product Tour</CardTitle>
+                    <CardDescription className="text-xs">
+                      Walk through the 11 key NexRep modules, AI reply workflow, and profile audit tools.
+                    </CardDescription>
+                  </div>
+                </div>
+                <Badge
+                  variant="outline"
+                  className={
+                    isCompleted
+                      ? "text-xs font-semibold border-emerald-200 bg-emerald-50 text-emerald-800"
+                      : "text-xs font-normal border-slate-200 bg-slate-50 text-slate-600"
+                  }
+                >
+                  {isCompleted ? "Tour Completed" : "Tour Available"}
+                </Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="pt-4 space-y-3">
+              <p className="text-xs text-slate-500 leading-relaxed">
+                Need a refresher on how to manage locations, configure AI safety gates, or draft Google Business posts? You can restart the interactive guided walkthrough at any time.
+              </p>
+              <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-slate-600 text-[11px] flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-emerald-600 shrink-0" />
+                <span>
+                  Tour progress and completion states are stored securely per user and workspace in your browser session.
+                </span>
+              </div>
+              <div className="pt-1">
+                <Button
+                  type="button"
+                  onClick={restartTour}
+                  variant="outline"
+                  className="border-emerald-300 text-emerald-800 hover:bg-emerald-50 text-xs font-semibold h-9 px-4 rounded-xl gap-2 shadow-2xs"
+                >
+                  <RotateCcw className="w-3.5 h-3.5 text-emerald-700" />
+                  <span>Restart Product Tour</span>
+                </Button>
+              </div>
             </CardContent>
           </Card>
         </>

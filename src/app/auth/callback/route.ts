@@ -15,7 +15,7 @@ export async function GET(request: NextRequest) {
   const host = request.headers.get('host') || 'localhost:3001'
   let origin = 'http://localhost:3001'
   if (process.env.NEXT_PUBLIC_SITE_URL) {
-    origin = process.env.NEXT_PUBLIC_SITE_URL
+    origin = process.env.NEXT_PUBLIC_SITE_URL.trim().replace(/\/$/, '')
   } else if (!host.startsWith('localhost')) {
     const protocol = request.headers.get('x-forwarded-proto') || 'https'
     origin = `${protocol}://${host}`

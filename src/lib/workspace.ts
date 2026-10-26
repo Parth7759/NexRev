@@ -133,6 +133,7 @@ export async function getVerifiedLocations(supabase: TypedSupabaseClient, worksp
     .from('locations')
     .select('*')
     .eq('workspace_id', workspaceId)
+    .eq('is_connected', true)
     .order('created_at', { ascending: false })
 
   if (error) throw new Error(error.message)

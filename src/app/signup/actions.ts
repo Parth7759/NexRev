@@ -17,7 +17,7 @@ export async function signup(prevState: { error: string; message?: string }, for
   const host = headerList.get('host') || 'localhost:3001'
   let origin = 'http://localhost:3001'
   if (process.env.NEXT_PUBLIC_SITE_URL) {
-    origin = process.env.NEXT_PUBLIC_SITE_URL
+    origin = process.env.NEXT_PUBLIC_SITE_URL.trim().replace(/\/$/, '')
   } else if (!host.startsWith('localhost')) {
     const protocol = headerList.get('x-forwarded-proto') || 'https'
     origin = `${protocol}://${host}`
@@ -45,7 +45,35 @@ export async function signup(prevState: { error: string; message?: string }, for
   }
 
   // If email confirmation is disabled, session is returned immediately
-  if (authData?.session) {
+  if (authData?.session?.user) {
+    const cleanEmail = (formData.get('email') as string || '').trim().toLowerCase()
+    try {
+      const { createAdminClient } = await import('@/utils/supabase/admin')
+      const adminClient = createAdminClient()
+      const { data: pendingInvites } = await adminClient
+        .from('workspace_invitations')
+        .select('*')
+        .eq('email', cleanEmail)
+
+      if (pendingInvites && pendingInvites.length > 0) {
+        for (const inv of pendingInvites) {
+          if (new Date(inv.expires_at) >= new Date()) {
+            await adminClient.from('workspace_members').upsert(
+              {
+                workspace_id: inv.workspace_id,
+                user_id: authData.session.user.id,
+                role: inv.role,
+              },
+              { onConflict: 'workspace_id,user_id' }
+            )
+          }
+          await adminClient.from('workspace_invitations').delete().eq('id', inv.id)
+        }
+      }
+    } catch (e) {
+      console.warn('Failed auto-enrolling invited user on signup:', e)
+    }
+
     revalidatePath('/', 'layout')
     redirect('/dashboard')
   }

@@ -104,7 +104,10 @@ export async function saveWorkspaceSettingsAction(
         require_approval_for_critical: input.requireApprovalForCritical,
         default_reply_tone: input.defaultReplyTone,
         business_context: input.businessContext?.trim() || '',
-        auto_reply_min_rating: input.autoReplyMinRating || 4,
+        auto_reply_min_rating:
+          typeof input.autoReplyMinRating === 'number'
+            ? input.autoReplyMinRating
+            : (input.autoReplyMode === 'auto_publish_all' ? 1 : 4),
         auto_reply_delay_minutes: input.autoReplyDelayMinutes || 5,
         updated_at: new Date().toISOString(),
       })

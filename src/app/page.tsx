@@ -1,18 +1,16 @@
 import Link from 'next/link';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
-import { ArrowRight, Star, BarChart, ShieldCheck } from 'lucide-react';
+import { ArrowRight, BarChart, ShieldCheck, Star } from 'lucide-react';
+import { NexRepLogo } from '@/components/brand/logo';
 
 export default function LandingPage() {
   return (
     <div className="flex flex-col min-h-screen bg-slate-50 text-slate-900 font-sans">
       <header className="px-6 lg:px-12 h-20 flex items-center justify-between border-b border-slate-200 bg-white">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
-            <Star className="text-white w-5 h-5" />
-          </div>
-          <span className="font-bold text-2xl tracking-tight text-slate-900">NexRep</span>
-        </div>
+        <Link href="/" className="flex items-center">
+          <NexRepLogo variant="light" showTagline={true} />
+        </Link>
         <nav className="hidden md:flex gap-8 text-sm font-medium">
           <Link href="#features" className="hover:text-blue-600 transition-colors">Features</Link>
           <Link href="#workflow" className="hover:text-blue-600 transition-colors">Workflow</Link>

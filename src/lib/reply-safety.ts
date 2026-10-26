@@ -115,12 +115,17 @@ export function evaluateReplyApprovalPolicy(
     }
   }
 
-  // Rule 3: Check minimum rating threshold
-  if (rating < settings.autoReplyMinRating) {
+  // Rule 3: Check minimum rating threshold (for auto_publish_all, threshold defaults to 1 star)
+  const minThreshold =
+    settings.autoReplyMode === 'auto_publish_all' && settings.autoReplyMinRating === 4
+      ? 1
+      : settings.autoReplyMinRating
+
+  if (rating < minThreshold) {
     return {
       requiresApproval: true,
       status: 'draft',
-      reason: `Rating of ${rating} is below the automatic publish threshold (${settings.autoReplyMinRating} stars).`,
+      reason: `Rating of ${rating} is below the automatic publish threshold (${minThreshold} stars).`,
     }
   }
 

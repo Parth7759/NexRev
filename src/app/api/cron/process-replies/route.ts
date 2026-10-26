@@ -54,6 +54,14 @@ async function handleCronExecution(request: NextRequest) {
   const limitParam = url.searchParams.get('limit')
   const limit = limitParam ? Math.min(100, Math.max(1, parseInt(limitParam, 10))) : 25
 
+  // In production, background review processing requires SUPABASE_SERVICE_ROLE_KEY to bypass RLS
+  if (process.env.NODE_ENV === 'production' && !isDryRun && (!process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY.trim() === '')) {
+    return NextResponse.json(
+      { success: false, error: 'Server misconfiguration: SUPABASE_SERVICE_ROLE_KEY must be configured in production for automated background review processing.' },
+      { status: 500 }
+    )
+  }
+
   try {
     const supabase = createAdminClient()
 

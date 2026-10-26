@@ -89,7 +89,8 @@ export async function autoProcessSingleReview(
       locations (
         name,
         google_location_id,
-        google_account_id
+        google_account_id,
+        is_connected
       )
     `)
     .eq('id', reviewId)
@@ -107,7 +108,49 @@ export async function autoProcessSingleReview(
     }
   }
 
-  // 2. Idempotency Check: Prevent duplicate publishing
+  // 2. Strict Business Profile Isolation:
+  // - AI replies must be generated and published ONLY for the explicitly selected Google Business Profile.
+  // - Never process or publish replies for unselected profiles, even if their database rows have is_connected = true.
+  // - If no profile is selected, or the selection is ambiguous, stop automation and publish nothing.
+  const { data: wsConnectedLocs } = await supabase
+    .from('locations')
+    .select('id, name, google_location_id, google_account_id, is_connected')
+    .eq('workspace_id', workspaceId)
+    .eq('is_connected', true)
+
+  if (!wsConnectedLocs || wsConnectedLocs.length === 0) {
+    return {
+      success: false,
+      skipped: true,
+      requiresApproval: true,
+      reason: 'Automation stopped: No business profile is selected for this workspace.',
+      error: 'Automation stopped: No business profile is selected for this workspace.',
+    }
+  }
+
+  if (wsConnectedLocs.length > 1) {
+    return {
+      success: false,
+      skipped: true,
+      requiresApproval: true,
+      reason: 'Automation stopped: Ambiguous profile selection (multiple profiles active). Explicit selection required.',
+      error: 'Automation stopped: Ambiguous profile selection. Exactly one profile must be selected.',
+    }
+  }
+
+  const activeSelectedLoc = wsConnectedLocs[0]
+  if (targetReview.location_id !== activeSelectedLoc.id) {
+    return {
+      success: true,
+      skipped: true,
+      status: 'draft',
+      requiresApproval: true,
+      reason: `Automation stopped: Review belongs to an unselected business profile (${targetReview.location_id}).`,
+      error: 'Automation stopped: Review does not belong to the workspace explicitly selected business profile.',
+    }
+  }
+
+  // 3. Idempotency Check: Prevent duplicate publishing
   const existingReply = await findExistingReviewReply(supabase, reviewId, workspaceId)
   if (existingReply && existingReply.status === 'published') {
     return {
@@ -132,7 +175,7 @@ export async function autoProcessSingleReview(
     }
   }
 
-  // 3. Fetch workspace settings
+  // 4. Fetch workspace settings
   const settings = await getWorkspaceReplySettings(supabase, workspaceId)
   const selectedTone = params.tone || settings.defaultReplyTone || 'professional'
   const locData = Array.isArray(targetReview.locations)
@@ -146,7 +189,8 @@ export async function autoProcessSingleReview(
     rating: targetReview.rating,
     reviewContent: targetReview.content || '',
     locationName,
-    businessName: settings.businessContext || undefined,
+    businessName: locationName || settings.businessContext || 'our business',
+    businessContext: settings.businessContext || undefined,
     tone: selectedTone,
   })
 
@@ -234,6 +278,73 @@ export async function autoProcessSingleReview(
   }
 
   // 7. Auto-Publishing Workflow (when policy permits and not dryRun)
+  const isLocationConnected = Boolean(locData?.is_connected ?? activeSelectedLoc.is_connected)
+  const googleLocationId = locData?.google_location_id || activeSelectedLoc.google_location_id
+  const googleAccountId = locData?.google_account_id || activeSelectedLoc.google_account_id
+  const externalReviewId = targetReview.external_review_id
+
+  // Fail closed: If profile is disconnected or has an invalid mapping, pause publishing and require explicit selection
+  if (!isLocationConnected || !googleLocationId || !googleAccountId) {
+    let replyId: string
+    if (existingReply) {
+      const { data: updated } = await supabase
+        .from('review_replies')
+        .update({
+          content: aiResult.reply.trim(),
+          tone: selectedTone,
+          user_id: userId,
+          status: 'draft',
+          is_ai_generated: true,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', existingReply.id)
+        .select('id')
+        .single()
+      replyId = updated?.id || existingReply.id
+    } else {
+      const { data: inserted } = await supabase
+        .from('review_replies')
+        .insert({
+          review_id: reviewId,
+          workspace_id: workspaceId,
+          user_id: userId,
+          content: aiResult.reply.trim(),
+          tone: selectedTone,
+          is_ai_generated: true,
+          status: 'draft',
+        })
+        .select('id')
+        .single()
+      replyId = inserted?.id || ''
+    }
+
+    await logReplyAudit(supabase, {
+      workspaceId,
+      reviewId,
+      replyId,
+      userId,
+      action: 'generated',
+      content: aiResult.reply.trim(),
+      tone: selectedTone,
+      errorMessage: 'Publishing paused: Business profile is disconnected or has an invalid mapping. Reconnection or reselection required.',
+      metadata: {
+        autoProcessed: true,
+        savedAsDraft: true,
+        dryRun,
+        pausedDueToDisconnectedProfile: true,
+      },
+    })
+
+    return {
+      success: true,
+      replyId,
+      replyContent: aiResult.reply.trim(),
+      status: 'draft',
+      requiresApproval: true,
+      reason: 'Publishing paused: Selected business profile is disconnected or invalid mapping. Reconnection or reselection required.',
+    }
+  }
+
   let replyId: string
   if (existingReply) {
     const { data: updated } = await supabase
@@ -266,10 +377,6 @@ export async function autoProcessSingleReview(
       .single()
     replyId = inserted?.id || ''
   }
-
-  const googleLocationId = locData?.google_location_id
-  const googleAccountId = locData?.google_account_id
-  const externalReviewId = targetReview.external_review_id
 
   if (googleLocationId && externalReviewId) {
     try {
@@ -387,10 +494,16 @@ export async function autoProcessWorkspaceUnansweredReviews(
     .select(`
       id,
       workspace_id,
+      location_id,
       status,
-      created_at
+      created_at,
+      locations!inner (
+        id,
+        is_connected
+      )
     `)
     .eq('status', 'unanswered')
+    .eq('locations.is_connected', true)
     .order('created_at', { ascending: false })
     .limit(limit)
 
@@ -424,6 +537,29 @@ export async function autoProcessWorkspaceUnansweredReviews(
 
   for (const review of unansweredReviews) {
     try {
+      // Fail closed: Verify review workspace has strictly 1 active connected profile
+      const { data: wsLocs } = await supabase
+        .from('locations')
+        .select('id')
+        .eq('workspace_id', review.workspace_id)
+        .eq('is_connected', true)
+
+      if (!wsLocs || wsLocs.length !== 1) {
+        skipped++
+        continue
+      }
+
+      // Check review belongs to the strictly active single connected location
+      const activeLocId = wsLocs[0].id
+      const reviewLocId =
+        (review as { location_id?: string }).location_id ||
+        (Array.isArray(review.locations) ? review.locations[0]?.id : (review.locations as { id?: string })?.id)
+
+      if (reviewLocId !== activeLocId) {
+        skipped++
+        continue
+      }
+
       const result = await autoProcessSingleReview(supabase, {
         reviewId: review.id,
         workspaceId: review.workspace_id,

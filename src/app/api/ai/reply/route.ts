@@ -3,6 +3,7 @@ import { createClient } from '@/utils/supabase/server'
 import { generateReviewReply, ReplyTone } from '@/lib/ai'
 import { checkRateLimit } from '@/lib/rate-limit'
 import { verifyWorkspaceMembership } from '@/lib/workspace'
+import { getWorkspaceReplySettings } from '@/lib/reply-safety'
 
 export async function POST(request: NextRequest) {
   try {
@@ -61,11 +62,15 @@ export async function POST(request: NextRequest) {
     const validTones: ReplyTone[] = ['professional', 'friendly', 'concise', 'empathetic']
     const selectedTone: ReplyTone = validTones.includes(tone) ? tone : 'professional'
 
+    const settings = await getWorkspaceReplySettings(supabase, workspaceId)
+
     const result = await generateReviewReply({
       authorName,
       rating: numericRating,
       reviewContent: content,
       locationName,
+      businessName: locationName || settings.businessContext || 'our business',
+      businessContext: settings.businessContext || undefined,
       tone: selectedTone,
     })
 

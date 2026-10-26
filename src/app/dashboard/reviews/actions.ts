@@ -88,6 +88,48 @@ export async function generateAiReplyAction(params: GenerateReplyActionParams) {
     }
     const settings = await getWorkspaceReplySettings(supabase, params.workspaceId)
     businessContext = settings.businessContext
+
+    // For live reviews, enforce strict profile selection isolation
+    if (params.reviewId && !params.reviewId.startsWith('demo-')) {
+      const { data: rev } = await supabase
+        .from('reviews')
+        .select('id, workspace_id, location_id')
+        .eq('id', params.reviewId)
+        .maybeSingle()
+
+      if (rev) {
+        if (rev.workspace_id !== params.workspaceId) {
+          return { success: false, error: 'Security violation: Review does not belong to specified workspace.' }
+        }
+
+        const { data: wsLocs } = await supabase
+          .from('locations')
+          .select('id')
+          .eq('workspace_id', params.workspaceId)
+          .eq('is_connected', true)
+
+        if (!wsLocs || wsLocs.length === 0) {
+          return {
+            success: false,
+            error: 'AI generation blocked: No business profile is currently selected for this workspace. Please select a profile first.',
+          }
+        }
+
+        if (wsLocs.length > 1) {
+          return {
+            success: false,
+            error: 'AI generation blocked: Ambiguous profile selection (multiple profiles active). Please select a single profile.',
+          }
+        }
+
+        if (rev.location_id !== wsLocs[0].id) {
+          return {
+            success: false,
+            error: 'AI generation blocked: This review belongs to an unselected business profile. Only the selected profile can be processed.',
+          }
+        }
+      }
+    }
   }
 
   // Execute AI generation for ALL ratings (1-5 stars are never blocked)
@@ -96,7 +138,8 @@ export async function generateAiReplyAction(params: GenerateReplyActionParams) {
     rating: params.rating,
     reviewContent: params.reviewContent?.trim() || '',
     locationName: params.locationName,
-    businessName: businessContext || undefined,
+    businessName: params.locationName || businessContext || 'our business',
+    businessContext: businessContext || undefined,
     tone: params.tone,
   })
 
@@ -161,14 +204,12 @@ export async function saveReviewReplyAction(params: SaveReplyActionParams) {
     }
   }
 
-  // Handle Demo Reviews gracefully
+  // Handle Demo Reviews gracefully - demo drafts remain local/in-memory and NEVER touch the database or Google
   if (params.isDemo || !params.reviewId || params.reviewId.startsWith('demo-')) {
     return {
       success: true,
       isDemo: true,
-      message: params.publishToGoogle === false
-        ? 'Draft saved for sample review. In production with Google Business Profile connected, replies will publish directly to Google.'
-        : 'Reply saved for sample review. In production with Google Business Profile connected, replies will publish directly to Google.',
+      message: 'Draft updated in demo mode. Demo drafts are kept locally and are never stored or published to Google.',
     }
   }
 
@@ -208,8 +249,10 @@ export async function saveReviewReplyAction(params: SaveReplyActionParams) {
       external_review_id,
       location_id,
       locations (
+        name,
         google_location_id,
-        google_account_id
+        google_account_id,
+        is_connected
       )
     `)
     .eq('id', params.reviewId)
@@ -322,12 +365,33 @@ export async function saveReviewReplyAction(params: SaveReplyActionParams) {
   }
 
   // 4. If connected to Google Business Profile, attempt to publish reply to Google
-  const locationData = targetReview.locations as unknown as { google_location_id?: string; google_account_id?: string } | null
+  const locationData = targetReview.locations as unknown as {
+    name?: string
+    google_location_id?: string
+    google_account_id?: string
+    is_connected?: boolean
+  } | null
   const googleLocationId = locationData?.google_location_id
   const googleAccountId = locationData?.google_account_id
   const externalReviewId = targetReview.external_review_id
 
   if (googleLocationId && externalReviewId) {
+    // Verify location is connected AND workspace has strictly 1 active connected profile matching this review
+    const { data: wsLocs } = await supabase
+      .from('locations')
+      .select('id')
+      .eq('workspace_id', params.workspaceId)
+      .eq('is_connected', true)
+
+    if (!locationData?.is_connected || !wsLocs || wsLocs.length !== 1 || wsLocs[0].id !== targetReview.location_id) {
+      return {
+        success: false,
+        replyId,
+        status: 'draft',
+        error:
+          'Publishing paused: No active business profile is currently selected for this workspace. Please select a profile in Locations before publishing.',
+      }
+    }
     try {
       const googleRes = await publishGoogleReviewReply(
         supabase,
@@ -489,6 +553,99 @@ export async function autoProcessReviewReplyAction(params: AutoProcessReviewPara
   revalidatePath('/dashboard/reviews', 'page')
 
   return result
+}
+
+/**
+ * Server Action: Fetches eligible reviews for the AI Reply Assistant.
+ * Scoped to the workspace and optional active location.
+ */
+export async function getEligibleReviewsForAiAction(
+  workspaceId: string,
+  locationId?: string | null
+): Promise<{
+  success: boolean
+  reviews: Array<{
+    id: string
+    author: string
+    rating: number
+    content: string
+    date: string
+    status: string
+    location: string
+    locationId: string | null
+    reply?: string
+    replyStatus?: string
+  }>
+  error?: string
+}> {
+  if (!workspaceId) {
+    return { success: false, reviews: [], error: 'Workspace ID required.' }
+  }
+
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+
+  if (!user) {
+    return { success: false, reviews: [], error: 'Not authenticated.' }
+  }
+
+  const membership = await verifyWorkspaceMembership(supabase, workspaceId)
+  if (!membership.isMember) {
+    return { success: false, reviews: [], error: 'Unauthorized.' }
+  }
+
+  let query = supabase
+    .from('reviews')
+    .select(`
+      id,
+      author_name,
+      rating,
+      content,
+      review_date,
+      status,
+      location_id,
+      locations ( name ),
+      review_replies ( id, content, tone, status )
+    `)
+    .eq('workspace_id', workspaceId)
+    .order('review_date', { ascending: false })
+    .limit(30)
+
+  if (locationId) {
+    query = query.eq('location_id', locationId)
+  }
+
+  const { data, error } = await query
+
+  if (error) {
+    return { success: false, reviews: [], error: error.message }
+  }
+
+  const reviews = (data || []).map((r) => {
+    const loc = r.locations as unknown as { name?: string } | null
+    const replies = r.review_replies as unknown as Array<{
+      id: string
+      content: string
+      tone: string
+      status: string
+    }> | null
+    const reply = replies && replies.length > 0 ? replies[0] : null
+
+    return {
+      id: r.id,
+      author: r.author_name || 'Customer',
+      rating: r.rating,
+      content: r.content || '',
+      date: r.review_date,
+      status: r.status,
+      location: loc?.name || 'Google Business Profile',
+      locationId: r.location_id,
+      reply: reply?.content,
+      replyStatus: reply?.status,
+    }
+  })
+
+  return { success: true, reviews }
 }
 
 

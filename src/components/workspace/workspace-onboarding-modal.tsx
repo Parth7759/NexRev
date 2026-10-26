@@ -98,7 +98,7 @@ export function WorkspaceOnboardingModal() {
             <Button
               type="submit"
               disabled={isSubmitting || !workspaceName.trim()}
-              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium shadow-sm transition-all"
+              className="w-full bg-slate-900 hover:bg-slate-800 text-white font-medium shadow-xs transition-all h-10"
             >
               {isSubmitting ? (
                 <>

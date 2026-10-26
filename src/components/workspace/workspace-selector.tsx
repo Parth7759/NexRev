@@ -222,7 +222,7 @@ export function WorkspaceSelector() {
                   type="submit"
                   size="sm"
                   disabled={isCreating || !newWorkspaceName.trim()}
-                  className="w-1/2 bg-blue-600 hover:bg-blue-700 text-white text-xs"
+                  className="w-1/2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-medium shadow-xs"
                 >
                   {isCreating ? (
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />

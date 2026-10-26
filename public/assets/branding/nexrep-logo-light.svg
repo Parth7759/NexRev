@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 54" fill="none">
+  <defs>
+    <linearGradient id="nr-bg-light" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#059669"/>
+      <stop offset="100%" stop-color="#064E3B"/>
+    </linearGradient>
+    <linearGradient id="nr-star-light" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#F0FDF4"/>
+    </linearGradient>
+    <linearGradient id="nr-accent-light" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#6EE7B7"/>
+      <stop offset="100%" stop-color="#10B981"/>
+    </linearGradient>
+  </defs>
+
+  <!-- ICON GLYPH (x=4, y=7, w=40, h=40) -->
+  <g transform="translate(4, 7)">
+    <rect width="40" height="40" rx="10" fill="url(#nr-bg-light)" stroke="#059669" stroke-width="1.2" stroke-opacity="0.3"/>
+    
+    <!-- Bubble contour -->
+    <path d="M11 11C9.2 11 8 12.2 8 14V22.5C8 24.3 9.2 25.5 11 25.5H12.5V29.5C12.5 30.1 13.2 30.4 13.6 30.0L18 26C18.4 25.7 18.9 25.5 19.4 25.5H30C31.8 25.5 33 24.3 33 22.5V14C33 12.2 31.8 11 30 11H11Z" fill="#022C22" fill-opacity="0.5"/>
+
+    <!-- Star glyph -->
+    <path d="M16 14L17.3 17L20.5 17.3L18 19.4L18.7 22.5L16 20.8L13.3 22.5L14 19.4L11.5 17.3L14.7 17L16 14Z" fill="url(#nr-star-light)"/>
+
+    <!-- Upward Growth Arrow -->
+    <path d="M19.5 22.5L26.5 15.5" stroke="url(#nr-accent-light)" stroke-width="2.2" stroke-linecap="round"/>
+    <path d="M22.5 15H27V19.5" stroke="url(#nr-accent-light)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Sparkle -->
+    <path d="M31 7.5C31 8.8 29.8 9.5 29 9.5C29.8 9.5 31 10.2 31 11.5C31 10.2 32.2 9.5 33 9.5C32.2 9.5 31 8.8 31 7.5Z" fill="#A7F3D0"/>
+  </g>
+
+  <!-- WORDMARK: "NexRep" -->
+  <text x="56" y="30" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="22" font-weight="800" letter-spacing="-0.5" fill="#0A3022">
+    Nex<tspan fill="#059669">Rep</tspan>
+  </text>
+
+  <!-- TAGLINE: "by NexFlowOps" -->
+  <text x="56.5" y="44" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="10" font-weight="600" letter-spacing="0.8" fill="#047857" fill-opacity="0.95">
+    by NexFlowOps
+  </text>
+</svg>

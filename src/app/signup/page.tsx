@@ -4,9 +4,10 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { AlertCircle, Star, Loader2, CheckCircle2 } from "lucide-react";
+import { AlertCircle, Loader2, CheckCircle2 } from "lucide-react";
 import { useActionState } from "react";
 import { signup } from "./actions";
+import { NexRepLogo } from "@/components/brand/logo";
 
 const initialState = {
   error: "",
@@ -24,11 +25,8 @@ export default function SignupPage() {
       <div className="flex flex-1 flex-col justify-center py-12 px-4 sm:px-6 lg:px-8">
         <div className="mx-auto w-full max-w-md">
           <div className="flex justify-center mb-8">
-            <Link href="/" className="flex items-center gap-2">
-              <div className="w-10 h-10 bg-blue-600 rounded-lg flex items-center justify-center">
-                <Star className="text-white w-6 h-6" />
-              </div>
-              <span className="font-bold text-3xl tracking-tight text-slate-900">NexRep</span>
+            <Link href="/" className="flex items-center">
+              <NexRepLogo variant="light" showTagline={true} iconSize={40} />
             </Link>
           </div>
           
@@ -80,7 +78,7 @@ export default function SignupPage() {
               </div>
 
               <div>
-                <Button type="submit" className="w-full bg-blue-600 hover:bg-blue-700 text-white" disabled={isPending}>
+                <Button type="submit" className="w-full bg-[#0A3022] hover:bg-[#0E3D2E] text-white rounded-xl shadow-xs h-10 font-semibold" disabled={isPending}>
                   {isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
                   Create Account
                 </Button>
@@ -89,7 +87,7 @@ export default function SignupPage() {
 
             <p className="mt-8 text-center text-sm text-slate-500">
               Already have an account?{" "}
-              <Link href="/login" className="font-semibold leading-6 text-blue-600 hover:text-blue-500">
+              <Link href="/login" className="font-semibold leading-6 text-emerald-700 hover:text-emerald-800">
                 Log in
               </Link>
             </p>

@@ -17,66 +17,94 @@ import {
   X,
   Shield,
   UserCheck,
+  Copy,
+  Check,
+  Clock,
+  Send,
+  Info,
 } from "lucide-react";
 import { useWorkspace } from "@/contexts/workspace-context";
 import {
   getTeamMembersAction,
+  getPendingInvitationsAction,
   inviteTeamMemberAction,
+  revokeInvitationAction,
   updateMemberRoleAction,
   removeMemberAction,
   TeamMemberItem,
+  PendingInvitationItem,
 } from "./actions";
 import { WorkspaceRole } from "@/types/database.types";
 
 export default function TeamPage() {
-  const { activeWorkspaceId, activeWorkspace } = useWorkspace();
+  const { activeWorkspaceId, activeWorkspace, isLoading: isWorkspaceLoading } = useWorkspace();
   const [members, setMembers] = useState<TeamMemberItem[]>([]);
+  const [pendingInvitations, setPendingInvitations] = useState<PendingInvitationItem[]>([]);
   const [callerRole, setCallerRole] = useState<WorkspaceRole | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoaded, setIsLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const isLoading = isWorkspaceLoading || (!isLoaded && Boolean(activeWorkspaceId));
 
   // Invite modal state
   const [isInviteOpen, setIsInviteOpen] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<"admin" | "member">("member");
   const [isInviting, setIsInviting] = useState(false);
-  const [inviteStatus, setInviteStatus] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [inviteResult, setInviteResult] = useState<{
+    success: boolean;
+    message: string;
+    inviteLink?: string;
+  } | null>(null);
 
-  const refreshMembers = useCallback(async () => {
+  // Copied link state feedback
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  const refreshData = useCallback(async () => {
     if (!activeWorkspaceId) return;
     try {
-      const res = await getTeamMembersAction(activeWorkspaceId);
-      if (res.success) {
-        setMembers(res.members);
-        setCallerRole(res.callerRole);
+      const [membersRes, invitesRes] = await Promise.all([
+        getTeamMembersAction(activeWorkspaceId),
+        getPendingInvitationsAction(activeWorkspaceId),
+      ]);
+      if (membersRes.success) {
+        setMembers(membersRes.members);
+        setCallerRole(membersRes.callerRole);
+      }
+      if (invitesRes.success) {
+        setPendingInvitations(invitesRes.invitations);
       }
     } catch (err: unknown) {
-      console.error("Error refreshing team:", err);
+      console.error("Error refreshing team data:", err);
     }
   }, [activeWorkspaceId]);
 
   useEffect(() => {
     let isMounted = true;
-    if (!activeWorkspaceId) {
-      return;
-    }
+    if (!activeWorkspaceId) return;
 
-    getTeamMembersAction(activeWorkspaceId)
-      .then((res) => {
+    Promise.all([
+      getTeamMembersAction(activeWorkspaceId),
+      getPendingInvitationsAction(activeWorkspaceId),
+    ])
+      .then(([membersRes, invitesRes]) => {
         if (!isMounted) return;
-        if (res.success) {
-          setMembers(res.members);
-          setCallerRole(res.callerRole);
+        if (membersRes.success) {
+          setMembers(membersRes.members);
+          setCallerRole(membersRes.callerRole);
         } else {
-          setError(res.error || "Failed to load team members.");
+          setError(membersRes.error || "Failed to load team members.");
         }
-        setIsLoading(false);
+        if (invitesRes.success) {
+          setPendingInvitations(invitesRes.invitations);
+        }
+        setIsLoaded(true);
       })
       .catch((err: unknown) => {
         if (!isMounted) return;
         const msg = err instanceof Error ? err.message : "Error loading team.";
         setError(msg);
-        setIsLoading(false);
+        setIsLoaded(true);
       });
 
     return () => {
@@ -89,7 +117,7 @@ export default function TeamPage() {
     if (!activeWorkspaceId) return;
 
     setIsInviting(true);
-    setInviteStatus(null);
+    setInviteResult(null);
 
     const res = await inviteTeamMemberAction({
       workspaceId: activeWorkspaceId,
@@ -99,11 +127,18 @@ export default function TeamPage() {
 
     setIsInviting(false);
     if (res.success) {
-      setInviteStatus({ type: "success", text: res.message || "Invitation sent." });
+      setInviteResult({
+        success: true,
+        message: res.message || "Invitation created.",
+        inviteLink: res.inviteLink,
+      });
       setInviteEmail("");
-      refreshMembers();
+      refreshData();
     } else {
-      setInviteStatus({ type: "error", text: res.error || "Failed to invite." });
+      setInviteResult({
+        success: false,
+        message: res.error || "Failed to invite.",
+      });
     }
   };
 
@@ -115,7 +150,7 @@ export default function TeamPage() {
       newRole,
     });
     if (res.success) {
-      refreshMembers();
+      refreshData();
     } else {
       alert(res.error || "Failed to change role.");
     }
@@ -130,10 +165,33 @@ export default function TeamPage() {
       memberId,
     });
     if (res.success) {
-      refreshMembers();
+      refreshData();
     } else {
       alert(res.error || "Failed to remove member.");
     }
+  };
+
+  const handleRevokeInvitation = async (invitationId: string, email: string) => {
+    if (!activeWorkspaceId) return;
+    if (!confirm(`Are you sure you want to revoke the invitation for ${email}?`)) return;
+
+    const res = await revokeInvitationAction({
+      workspaceId: activeWorkspaceId,
+      invitationId,
+    });
+    if (res.success) {
+      refreshData();
+    } else {
+      alert(res.error || "Failed to revoke invitation.");
+    }
+  };
+
+  const copyToClipboard = (text: string, id: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    setTimeout(() => {
+      setCopiedId(null);
+    }, 2000);
   };
 
   const isManager = callerRole === "owner" || callerRole === "admin";
@@ -152,11 +210,11 @@ export default function TeamPage() {
           <Button
             onClick={() => {
               setIsInviteOpen(true);
-              setInviteStatus(null);
+              setInviteResult(null);
             }}
-            className="bg-blue-600 hover:bg-blue-700 h-9 text-xs shadow-sm"
+            className="bg-slate-900 hover:bg-slate-800 text-white h-9 px-3.5 text-xs font-medium shadow-xs gap-1.5 transition-all"
           >
-            <UserPlus className="w-4 h-4 mr-2" /> Invite Member
+            <UserPlus className="w-4 h-4" /> Invite Member
           </Button>
         )}
       </div>
@@ -168,6 +226,7 @@ export default function TeamPage() {
         </div>
       )}
 
+      {/* Active Members Card */}
       <Card className="border-slate-200 bg-white shadow-xs">
         <CardHeader className="pb-3 border-b border-slate-100 flex flex-row items-center justify-between">
           <div>
@@ -183,7 +242,7 @@ export default function TeamPage() {
         <CardContent className="pt-4">
           {isLoading ? (
             <div className="py-12 text-center text-slate-400 flex flex-col items-center justify-center gap-2">
-              <Loader2 className="w-5 h-5 animate-spin text-blue-600" />
+              <Loader2 className="w-5 h-5 animate-spin text-slate-900" />
               <span className="text-xs">Loading team members...</span>
             </div>
           ) : members.length === 0 ? (
@@ -209,7 +268,7 @@ export default function TeamPage() {
                   >
                     <div className="flex items-center gap-3 min-w-0">
                       <Avatar className="h-9 w-9 border border-slate-200">
-                        <AvatarFallback className="bg-blue-50 text-blue-700 text-xs font-bold">
+                        <AvatarFallback className="bg-slate-100 text-slate-800 text-xs font-bold">
                           {initials}
                         </AvatarFallback>
                       </Avatar>
@@ -217,7 +276,7 @@ export default function TeamPage() {
                         <div className="flex items-center gap-2">
                           <p className="text-xs font-semibold text-slate-900 truncate">{member.name}</p>
                           {member.isCurrentUser && (
-                            <span className="text-[10px] px-1.5 py-0.2 rounded bg-blue-100 text-blue-700 font-medium">
+                            <span className="text-[10px] px-1.5 py-0.2 rounded bg-blue-50 text-blue-700 border border-blue-200 font-medium">
                               You
                             </span>
                           )}
@@ -231,7 +290,7 @@ export default function TeamPage() {
                         <select
                           value={member.role}
                           onChange={(e) => handleRoleChange(member.id, e.target.value as WorkspaceRole)}
-                          className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs text-slate-700 shadow-2xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+                          className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs text-slate-700 shadow-2xs focus:outline-none focus:ring-1 focus:ring-slate-900"
                         >
                           <option value="admin">Admin</option>
                           <option value="member">Member</option>
@@ -276,16 +335,101 @@ export default function TeamPage() {
         </CardContent>
       </Card>
 
+      {/* Pending Invitations Card */}
+      {isManager && pendingInvitations.length > 0 && (
+        <Card className="border-slate-200 bg-white shadow-xs">
+          <CardHeader className="pb-3 border-b border-slate-100 flex flex-row items-center justify-between">
+            <div>
+              <CardTitle className="text-base font-semibold flex items-center gap-2">
+                <Clock className="w-4 h-4 text-amber-500" /> Pending Invitations
+              </CardTitle>
+              <CardDescription className="text-xs">
+                Invitations waiting for the recipient to join. Share the invite link directly.
+              </CardDescription>
+            </div>
+            <span className="text-xs font-mono font-medium text-slate-500">
+              {pendingInvitations.length} pending
+            </span>
+          </CardHeader>
+          <CardContent className="pt-4">
+            <div className="space-y-3">
+              {pendingInvitations.map((inv) => (
+                <div
+                  key={inv.id}
+                  className="flex flex-col sm:flex-row sm:items-center justify-between p-3.5 border border-slate-200 rounded-xl bg-slate-50/50 hover:bg-slate-50 transition-colors gap-3"
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="text-xs font-semibold text-slate-900 truncate">{inv.email}</p>
+                      <Badge
+                        variant="outline"
+                        className={`text-[10px] capitalize font-medium ${
+                          inv.isExpired
+                            ? "border-red-200 bg-red-50 text-red-700"
+                            : "border-amber-200 bg-amber-50 text-amber-700"
+                        }`}
+                      >
+                        {inv.isExpired ? "Expired" : "Pending"}
+                      </Badge>
+                      <Badge variant="outline" className="text-[10px] capitalize text-slate-600 border-slate-200">
+                        {inv.role}
+                      </Badge>
+                    </div>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      Expires {new Date(inv.expiresAt).toLocaleDateString()}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    {inv.inviteLink && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => copyToClipboard(inv.inviteLink!, inv.id)}
+                        className="text-xs h-8 gap-1.5 border-slate-200 text-slate-700 hover:bg-white"
+                      >
+                        {copiedId === inv.id ? (
+                          <>
+                            <Check className="w-3.5 h-3.5 text-emerald-600" /> Copied Link
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3.5 h-3.5 text-slate-500" /> Copy Link
+                          </>
+                        )}
+                      </Button>
+                    )}
+
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => handleRevokeInvitation(inv.id, inv.email)}
+                      title="Revoke invitation"
+                      className="h-8 w-8 text-slate-400 hover:text-red-600 hover:bg-red-50"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {/* Invite Member Modal */}
       {isInviteOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-in fade-in duration-150">
-          <div className="w-full max-w-sm rounded-xl bg-white p-5 shadow-2xl border border-slate-100">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-2xl border border-slate-100">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <div className="flex items-center gap-2">
-                <div className="w-7 h-7 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center">
+                <div className="w-8 h-8 rounded-lg bg-slate-100 text-slate-900 flex items-center justify-center">
                   <UserPlus className="w-4 h-4" />
                 </div>
-                <h4 className="font-semibold text-sm text-slate-900">Invite Team Member</h4>
+                <div>
+                  <h4 className="font-semibold text-sm text-slate-900">Invite Team Member</h4>
+                  <p className="text-xs text-slate-500">Add a colleague to {activeWorkspace?.name || "workspace"}</p>
+                </div>
               </div>
               <button
                 type="button"
@@ -296,82 +440,143 @@ export default function TeamPage() {
               </button>
             </div>
 
-            <form onSubmit={handleInviteSubmit} className="mt-4 space-y-3">
-              {inviteStatus && (
-                <div
-                  className={`p-2.5 rounded-lg text-xs flex items-center gap-2 border ${
-                    inviteStatus.type === "success"
-                      ? "bg-green-50 border-green-200 text-green-900"
-                      : "bg-red-50 border-red-200 text-red-900"
-                  }`}
-                >
-                  {inviteStatus.type === "success" ? (
-                    <CheckCircle2 className="w-4 h-4 text-green-600 shrink-0" />
-                  ) : (
-                    <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
-                  )}
-                  <span>{inviteStatus.text}</span>
+            {inviteResult?.success ? (
+              <div className="mt-4 space-y-4">
+                <div className="p-3.5 rounded-xl text-xs bg-emerald-50 border border-emerald-200 text-emerald-950 flex items-start gap-2.5">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-semibold text-emerald-900">Invitation Ready</p>
+                    <p className="text-emerald-800 mt-0.5">{inviteResult.message}</p>
+                  </div>
                 </div>
-              )}
 
-              <div className="space-y-1">
-                <Label htmlFor="invite-email" className="text-xs font-medium text-slate-700">
-                  Email Address
-                </Label>
-                <Input
-                  id="invite-email"
-                  type="email"
-                  placeholder="colleague@example.com"
-                  value={inviteEmail}
-                  onChange={(e) => setInviteEmail(e.target.value)}
-                  disabled={isInviting}
-                  required
-                  autoFocus
-                  className="text-xs"
-                />
-              </div>
+                {inviteResult.inviteLink && (
+                  <div className="space-y-2">
+                    <Label className="text-xs font-medium text-slate-700">Shareable Invitation Link</Label>
+                    <div className="flex gap-2">
+                      <Input
+                        readOnly
+                        value={inviteResult.inviteLink}
+                        className="text-xs font-mono bg-slate-50 text-slate-700 truncate select-all"
+                      />
+                      <Button
+                        size="sm"
+                        onClick={() => copyToClipboard(inviteResult.inviteLink!, "modal-link")}
+                        className="bg-slate-900 hover:bg-slate-800 text-white text-xs shrink-0 px-3"
+                      >
+                        {copiedId === "modal-link" ? (
+                          <>
+                            <Check className="w-3.5 h-3.5 mr-1 text-emerald-400" /> Copied
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3.5 h-3.5 mr-1" /> Copy Link
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                    <div className="flex items-start gap-1.5 text-[11px] text-slate-500 pt-1">
+                      <Info className="w-3.5 h-3.5 shrink-0 mt-0.5 text-slate-400" />
+                      <span>
+                        Email delivery service (e.g. Resend/SMTP) is not configured in environment variables. Send this
+                        direct invitation link to your teammate.
+                      </span>
+                    </div>
+                  </div>
+                )}
 
-              <div className="space-y-1">
-                <Label htmlFor="invite-role" className="text-xs font-medium text-slate-700">
-                  Role & Permissions
-                </Label>
-                <select
-                  id="invite-role"
-                  value={inviteRole}
-                  onChange={(e) => setInviteRole(e.target.value as "admin" | "member")}
-                  disabled={isInviting}
-                  className="w-full h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs text-slate-800 shadow-2xs focus:outline-none"
-                >
-                  <option value="member">Member (View & generate review replies)</option>
-                  <option value="admin">Admin (Manage integrations, members, & safety rules)</option>
-                </select>
+                <div className="pt-2">
+                  <Button
+                    onClick={() => {
+                      setIsInviteOpen(false);
+                      setInviteResult(null);
+                    }}
+                    className="w-full bg-slate-900 hover:bg-slate-800 text-white text-xs h-9 font-medium"
+                  >
+                    Done
+                  </Button>
+                </div>
               </div>
+            ) : (
+              <form onSubmit={handleInviteSubmit} className="mt-4 space-y-4">
+                {inviteResult?.success === false && (
+                  <div className="p-3 rounded-lg text-xs flex items-center gap-2 border bg-red-50 border-red-200 text-red-900">
+                    <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+                    <span>{inviteResult.message}</span>
+                  </div>
+                )}
 
-              <div className="flex gap-2 pt-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setIsInviteOpen(false)}
-                  disabled={isInviting}
-                  className="w-1/2 text-xs"
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="submit"
-                  size="sm"
-                  disabled={isInviting || !inviteEmail.trim()}
-                  className="w-1/2 bg-blue-600 hover:bg-blue-700 text-white text-xs shadow-sm"
-                >
-                  {isInviting ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" />
-                  ) : (
-                    "Send Invitation"
-                  )}
-                </Button>
-              </div>
-            </form>
+                <div className="space-y-1.5">
+                  <Label htmlFor="invite-email" className="text-xs font-medium text-slate-700">
+                    Colleague&apos;s Email Address
+                  </Label>
+                  <Input
+                    id="invite-email"
+                    type="email"
+                    placeholder="colleague@company.com"
+                    value={inviteEmail}
+                    onChange={(e) => setInviteEmail(e.target.value)}
+                    disabled={isInviting}
+                    required
+                    autoFocus
+                    className="text-xs h-9"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="invite-role" className="text-xs font-medium text-slate-700">
+                    Role & Permissions
+                  </Label>
+                  <select
+                    id="invite-role"
+                    value={inviteRole}
+                    onChange={(e) => setInviteRole(e.target.value as "admin" | "member")}
+                    disabled={isInviting}
+                    className="w-full h-9 rounded-xl border border-slate-200 bg-white px-3 text-xs text-slate-800 shadow-2xs focus:outline-none focus:ring-1 focus:ring-slate-900"
+                  >
+                    <option value="member">Member — View reviews, generate replies, manage drafts</option>
+                    <option value="admin">Admin — Manage Google profiles, team members & safety policies</option>
+                  </select>
+                </div>
+
+                <div className="rounded-lg bg-slate-50 border border-slate-200/80 p-3 text-[11px] text-slate-500 space-y-1">
+                  <p className="font-medium text-slate-700 flex items-center gap-1">
+                    <Send className="w-3 h-3 text-slate-500" /> Delivery Notice
+                  </p>
+                  <p>
+                    Because outbound email delivery is not configured, creating this invitation will generate a secure,
+                    instant join link for you to share directly.
+                  </p>
+                </div>
+
+                <div className="flex gap-2 pt-1">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setIsInviteOpen(false)}
+                    disabled={isInviting}
+                    className="w-1/2 text-xs h-9"
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="submit"
+                    size="sm"
+                    disabled={isInviting || !inviteEmail.trim()}
+                    className="w-1/2 bg-slate-900 hover:bg-slate-800 text-white text-xs h-9 font-medium shadow-xs"
+                  >
+                    {isInviting ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> Creating...
+                      </>
+                    ) : (
+                      "Create Invitation"
+                    )}
+                  </Button>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       )}

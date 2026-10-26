@@ -18,10 +18,19 @@ export async function GET(request: NextRequest) {
   const errorDescription = requestUrl.searchParams.get('error_description')
 
   // Prepare a redirect response with cookie cleanup
-  const createRedirect = (path: string, queryParam: { key: string; value: string }) => {
-    const res = NextResponse.redirect(
-      `${origin}${path}?${queryParam.key}=${encodeURIComponent(queryParam.value)}`
-    )
+  const createRedirect = (
+    path: string,
+    queryParam: { key: string; value: string },
+    extraParams?: Record<string, string>
+  ) => {
+    const url = new URL(`${origin}${path}`)
+    url.searchParams.set(queryParam.key, queryParam.value)
+    if (extraParams) {
+      for (const [k, v] of Object.entries(extraParams)) {
+        url.searchParams.set(k, v)
+      }
+    }
+    const res = NextResponse.redirect(url.toString())
     res.cookies.delete('nexrep_google_oauth_state')
     return res
   }
@@ -204,9 +213,13 @@ export async function GET(request: NextRequest) {
     })
   }
 
-  // 8. Redirect with success message
-  return createRedirect('/dashboard/locations', {
-    key: 'google_success',
-    value: `Successfully connected Google Business Profile account (${accountName}).`,
-  })
+  // 8. Redirect with success message and trigger business profile selector
+  return createRedirect(
+    '/dashboard/locations',
+    {
+      key: 'google_success',
+      value: `Successfully authenticated Google account (${accountName}). Please select your business profile below.`,
+    },
+    { select_profile: '1' }
+  )
 }
