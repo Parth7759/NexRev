@@ -2,6 +2,10 @@
 -- Description: Configurable reply safety settings, audit logging, and team invitations for NexRep
 -- Target: Supabase / PostgreSQL
 
+-- 0. Ensure extensions schema and pgcrypto are available for cryptographic token generation
+CREATE SCHEMA IF NOT EXISTS extensions;
+CREATE EXTENSION IF NOT EXISTS "pgcrypto" WITH SCHEMA extensions;
+
 -- 1. WORKSPACE SETTINGS TABLE
 CREATE TABLE IF NOT EXISTS public.workspace_settings (
   workspace_id uuid PRIMARY KEY REFERENCES public.workspaces(id) ON DELETE CASCADE,
@@ -43,7 +47,7 @@ CREATE TABLE IF NOT EXISTS public.workspace_invitations (
   email text NOT NULL,
   role text NOT NULL DEFAULT 'member' CHECK (role IN ('admin', 'member')),
   invited_by uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-  token text UNIQUE NOT NULL DEFAULT encode(gen_random_bytes(24), 'hex'),
+  token text UNIQUE NOT NULL DEFAULT encode(extensions.gen_random_bytes(24), 'hex'),
   expires_at timestamptz NOT NULL DEFAULT (now() + interval '7 days'),
   created_at timestamptz DEFAULT now() NOT NULL,
   CONSTRAINT unique_workspace_invitation_email UNIQUE (workspace_id, email)
