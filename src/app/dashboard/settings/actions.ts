@@ -7,6 +7,7 @@ import {
   getWorkspaceReplySettings,
   DEFAULT_REPLY_SETTINGS,
   AutoReplyMode,
+  packBusinessContextAndConfig,
 } from '@/lib/reply-safety'
 
 export interface SaveSettingsInput {
@@ -16,6 +17,8 @@ export interface SaveSettingsInput {
   businessContext: string
   autoReplyMinRating?: number
   autoReplyDelayMinutes?: number
+  negativeReviewAlertsEnabled?: boolean
+  negativeReviewAlertThreshold?: number
 }
 
 export async function getSettingsPageDataAction(workspaceId?: string | null) {
@@ -96,6 +99,11 @@ export async function saveWorkspaceSettingsAction(
   }
 
   try {
+    const packedBusinessContext = packBusinessContextAndConfig(input.businessContext, {
+      negativeReviewAlertsEnabled: input.negativeReviewAlertsEnabled ?? true,
+      negativeReviewAlertThreshold: input.negativeReviewAlertThreshold ?? 3,
+    })
+
     const { error: upsertError } = await supabase
       .from('workspace_settings')
       .upsert({
@@ -103,7 +111,7 @@ export async function saveWorkspaceSettingsAction(
         auto_reply_mode: input.autoReplyMode,
         require_approval_for_critical: input.requireApprovalForCritical,
         default_reply_tone: input.defaultReplyTone,
-        business_context: input.businessContext?.trim() || '',
+        business_context: packedBusinessContext,
         auto_reply_min_rating:
           typeof input.autoReplyMinRating === 'number'
             ? input.autoReplyMinRating
@@ -116,6 +124,7 @@ export async function saveWorkspaceSettingsAction(
       return { success: false, error: `Failed to save settings: ${upsertError.message}` }
     }
 
+    revalidatePath('/dashboard', 'layout')
     revalidatePath('/dashboard/settings', 'page')
     revalidatePath('/dashboard/reviews', 'page')
     return { success: true, message: 'Settings saved successfully.' }

@@ -16,6 +16,7 @@ import { AutoReplyMode } from "@/lib/reply-safety";
 import { ReplyTone } from "@/lib/ai";
 import {
   ShieldCheck,
+  ShieldAlert,
   User,
   Loader2,
   CheckCircle2,
@@ -23,6 +24,7 @@ import {
   Lock,
   RotateCcw,
   Sparkles,
+  Bell,
 } from "lucide-react";
 import { useTour } from "@/contexts/tour-context";
 
@@ -46,6 +48,12 @@ export default function SettingsPage() {
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [settingsMessage, setSettingsMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
+  // In-app negative review alerts state
+  const [negativeAlertsEnabled, setNegativeAlertsEnabled] = useState(true);
+  const [negativeAlertThreshold, setNegativeAlertThreshold] = useState<number>(3);
+  const [isSavingAlerts, setIsSavingAlerts] = useState(false);
+  const [alertsMessage, setAlertsMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
   useEffect(() => {
     let isMounted = true;
 
@@ -61,6 +69,8 @@ export default function SettingsPage() {
           setRequireCriticalApproval(data.settings.requireApprovalForCritical);
           setDefaultTone(data.settings.defaultReplyTone);
           setBusinessContext(data.settings.businessContext);
+          setNegativeAlertsEnabled(data.settings.negativeReviewAlertsEnabled ?? true);
+          setNegativeAlertThreshold(data.settings.negativeReviewAlertThreshold ?? 3);
         }
         setUserRole(data.userRole || null);
         setIsLoading(false);
@@ -102,6 +112,8 @@ export default function SettingsPage() {
       requireApprovalForCritical: requireCriticalApproval,
       defaultReplyTone: defaultTone,
       businessContext,
+      negativeReviewAlertsEnabled: negativeAlertsEnabled,
+      negativeReviewAlertThreshold: negativeAlertThreshold,
     });
 
     setIsSavingSettings(false);
@@ -109,6 +121,30 @@ export default function SettingsPage() {
       setSettingsMessage({ type: "success", text: res.message || "Settings updated successfully." });
     } else {
       setSettingsMessage({ type: "error", text: res.error || "Failed to save settings." });
+    }
+  };
+
+  const handleSaveAlertSettings = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!activeWorkspaceId) return;
+
+    setIsSavingAlerts(true);
+    setAlertsMessage(null);
+
+    const res = await saveWorkspaceSettingsAction(activeWorkspaceId, {
+      autoReplyMode,
+      requireApprovalForCritical: requireCriticalApproval,
+      defaultReplyTone: defaultTone,
+      businessContext,
+      negativeReviewAlertsEnabled: negativeAlertsEnabled,
+      negativeReviewAlertThreshold: negativeAlertThreshold,
+    });
+
+    setIsSavingAlerts(false);
+    if (res.success) {
+      setAlertsMessage({ type: "success", text: "In-app negative review alert preferences saved." });
+    } else {
+      setAlertsMessage({ type: "error", text: res.error || "Failed to save alert preferences." });
     }
   };
 
@@ -419,7 +455,182 @@ export default function SettingsPage() {
             </CardContent>
           </Card>
 
-          {/* 3. Onboarding & Product Tour Card */}
+          {/* 3. Negative Review Alerts (In-App Dashboard Only) Card */}
+          <Card className="border-slate-200 bg-white shadow-xs">
+            <CardHeader className="pb-3 border-b border-slate-100">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 rounded-lg bg-red-50 text-red-600 flex items-center justify-center shrink-0">
+                    <ShieldAlert className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <CardTitle className="text-base font-semibold">Negative Review Alerts</CardTitle>
+                    <CardDescription className="text-xs">
+                      Instant in-app alerts in your dashboard notification bell when low customer ratings are synced.
+                    </CardDescription>
+                  </div>
+                </div>
+                <Badge
+                  variant="outline"
+                  className="text-xs font-normal border-emerald-200 bg-emerald-50 text-emerald-800"
+                >
+                  In-App Dashboard Only
+                </Badge>
+              </div>
+            </CardHeader>
+            <CardContent className="pt-4">
+              {!isAuthorized && (
+                <div className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center gap-2">
+                  <Lock className="w-4 h-4 text-amber-700 shrink-0" />
+                  <span>
+                    You have view-only access. Only workspace owners and administrators can configure review alert settings.
+                  </span>
+                </div>
+              )}
+
+              <form onSubmit={handleSaveAlertSettings} className="space-y-4">
+                {alertsMessage && (
+                  <div
+                    className={`p-3 rounded-lg text-xs flex items-center gap-2 border ${
+                      alertsMessage.type === "success"
+                        ? "bg-green-50 border-green-200 text-green-900"
+                        : "bg-red-50 border-red-200 text-red-900"
+                    }`}
+                  >
+                    {alertsMessage.type === "success" ? (
+                      <CheckCircle2 className="w-4 h-4 text-green-600 shrink-0" />
+                    ) : (
+                      <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+                    )}
+                    <span>{alertsMessage.text}</span>
+                  </div>
+                )}
+
+                {/* Main Toggle */}
+                <div className="p-4 rounded-xl border border-slate-200 bg-slate-50/50 space-y-2">
+                  <div className="flex items-start gap-3">
+                    <input
+                      type="checkbox"
+                      id="negative-alerts-toggle"
+                      checked={negativeAlertsEnabled}
+                      onChange={(e) => setNegativeAlertsEnabled(e.target.checked)}
+                      disabled={!isAuthorized}
+                      className="mt-1 h-4 w-4 rounded border-slate-300 text-red-600 focus:ring-red-500"
+                    />
+                    <div>
+                      <Label
+                        htmlFor="negative-alerts-toggle"
+                        className="text-xs font-semibold text-slate-900 cursor-pointer"
+                      >
+                        Enable In-App Negative Review Alerts
+                      </Label>
+                      <p className="text-slate-500 text-[11px] mt-0.5 leading-relaxed">
+                        Surfaces urgent customer feedback directly in your dashboard notification center and review triage queue as soon as Google reviews are synchronized.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Rating Threshold Selection */}
+                {negativeAlertsEnabled && (
+                  <div className="space-y-2">
+                    <Label className="text-xs font-semibold text-slate-900">
+                      Alert Rating Threshold
+                    </Label>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label
+                        className={`p-3.5 rounded-xl border text-xs cursor-pointer flex flex-col justify-between transition-all ${
+                          negativeAlertThreshold === 3
+                            ? "border-red-600 bg-red-50/40 ring-1 ring-red-600"
+                            : "border-slate-200 bg-white hover:bg-slate-50"
+                        }`}
+                      >
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="font-semibold text-slate-900">1 to 3 Stars (Critical & Mixed)</span>
+                            <input
+                              type="radio"
+                              name="alertThreshold"
+                              checked={negativeAlertThreshold === 3}
+                              onChange={() => setNegativeAlertThreshold(3)}
+                              disabled={!isAuthorized}
+                              className="text-red-600"
+                            />
+                          </div>
+                          <p className="text-slate-500 text-[11px] leading-relaxed">
+                            Flags all severe complaints (1–2 stars) as well as neutral critiques (3 stars) for prompt staff review.
+                          </p>
+                        </div>
+                        <span className="inline-block mt-2 font-medium text-[10px] text-red-700 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded w-fit">
+                          Recommended
+                        </span>
+                      </label>
+
+                      <label
+                        className={`p-3.5 rounded-xl border text-xs cursor-pointer flex flex-col justify-between transition-all ${
+                          negativeAlertThreshold === 2
+                            ? "border-red-600 bg-red-50/40 ring-1 ring-red-600"
+                            : "border-slate-200 bg-white hover:bg-slate-50"
+                        }`}
+                      >
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="font-semibold text-slate-900">1 & 2 Stars Only (Severe Complaints)</span>
+                            <input
+                              type="radio"
+                              name="alertThreshold"
+                              checked={negativeAlertThreshold === 2}
+                              onChange={() => setNegativeAlertThreshold(2)}
+                              disabled={!isAuthorized}
+                              className="text-red-600"
+                            />
+                          </div>
+                          <p className="text-slate-500 text-[11px] leading-relaxed">
+                            Limits priority alerts strictly to dissatisfied 1 and 2-star customer ratings.
+                          </p>
+                        </div>
+                        <span className="inline-block mt-2 font-medium text-[10px] text-slate-600 bg-slate-50 border border-slate-200 px-1.5 py-0.5 rounded w-fit">
+                          Strict Complaints
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+                )}
+
+                {/* Explicit In-App / No Email Banner */}
+                <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-[11px] text-slate-600 flex items-start gap-2.5">
+                  <Bell className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+                  <div className="space-y-0.5">
+                    <p className="font-semibold text-slate-900">In-App Dashboard Notifications Only</p>
+                    <p className="text-slate-500 leading-relaxed">
+                      All negative review alerts are delivered exclusively within your NexRep dashboard header bell. Email notifications, SMTP, Resend, and SendGrid integrations are not used. Duplicate alerts are automatically prevented.
+                    </p>
+                  </div>
+                </div>
+
+                {isAuthorized && (
+                  <div className="pt-1">
+                    <Button
+                      type="submit"
+                      disabled={isSavingAlerts}
+                      className="bg-slate-900 hover:bg-slate-800 text-white text-xs font-medium h-9 px-4 shadow-xs"
+                    >
+                      {isSavingAlerts ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" />
+                          Saving Alerts...
+                        </>
+                      ) : (
+                        "Save Alert Preferences"
+                      )}
+                    </Button>
+                  </div>
+                )}
+              </form>
+            </CardContent>
+          </Card>
+
+          {/* 4. Onboarding & Product Tour Card */}
           <Card className="border-slate-200 bg-white shadow-xs">
             <CardHeader className="pb-3 border-b border-slate-100">
               <div className="flex items-center justify-between">

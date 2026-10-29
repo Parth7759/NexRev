@@ -5,6 +5,7 @@ import { revalidatePath } from 'next/cache'
 import { createClient } from '@/utils/supabase/server'
 import { WorkspaceRole } from '@/types/database.types'
 import { verifyWorkspaceMembership } from '@/lib/workspace'
+import { getWorkspaceReplySettings } from '@/lib/reply-safety'
 
 export interface UserWorkspace {
   id: string
@@ -440,8 +441,9 @@ export interface DashboardNotificationItem {
   title: string
   message: string
   timestamp: string
-  type: 'review' | 'draft' | 'profile' | 'team' | 'system'
+  type: 'review' | 'negative_alert' | 'draft' | 'profile' | 'team' | 'system'
   link: string
+  rating?: number
 }
 
 /**
@@ -479,6 +481,12 @@ export async function getDashboardNotificationsAction(
     }
 
     const notifications: DashboardNotificationItem[] = []
+    const alertedReviewIds = new Set<string>()
+
+    // Fetch workspace settings to inspect in-app negative review alert rules
+    const settings = await getWorkspaceReplySettings(supabase, workspaceId)
+    const alertsEnabled = settings.negativeReviewAlertsEnabled ?? true
+    const alertThreshold = settings.negativeReviewAlertThreshold ?? 3
 
     // 1. Check connected locations
     const { data: locations } = await supabase
@@ -497,17 +505,58 @@ export async function getDashboardNotificationsAction(
         link: '/dashboard/locations',
       })
     } else {
-      // 2. Check for unanswered reviews
+      // 2. Priority In-App Negative Review Alerts (1 to 3 stars or 1 to 2 stars)
+      // Generates high-priority in-app alerts for real synced Google customer feedback
+      if (alertsEnabled) {
+        const { data: negativeReviews } = await supabase
+          .from('reviews')
+          .select('id, author_name, rating, content, review_date, status, source')
+          .eq('workspace_id', workspaceId)
+          .lte('rating', alertThreshold)
+          .order('review_date', { ascending: false })
+          .limit(5)
+
+        if (negativeReviews && negativeReviews.length > 0) {
+          for (const rev of negativeReviews) {
+            alertedReviewIds.add(rev.id)
+            const isUnanswered = rev.status === 'unanswered'
+            const snippet = rev.content
+              ? rev.content.length > 70
+                ? `${rev.content.slice(0, 67)}…`
+                : rev.content
+              : null
+
+            notifications.push({
+              id: `neg-alert-${rev.id}`,
+              title: isUnanswered
+                ? `🚨 Negative Review Alert (${rev.rating}★)`
+                : `Negative Review (${rev.rating}★ - Resolved)`,
+              message: isUnanswered
+                ? `${rev.author_name} left a ${rev.rating}-star review${snippet ? `: "${snippet}"` : ''} — action required.`
+                : `${rev.author_name}'s ${rev.rating}-star review has been replied to.`,
+              timestamp: new Date(rev.review_date).toLocaleDateString(),
+              type: 'negative_alert',
+              link: '/dashboard/reviews',
+              rating: rev.rating,
+            })
+          }
+        }
+      }
+
+      // 3. Check for other unanswered reviews (excluding already alerted negative reviews to prevent duplicates)
       const { data: unanswered } = await supabase
         .from('reviews')
         .select('id, author_name, rating, review_date')
         .eq('workspace_id', workspaceId)
         .eq('status', 'unanswered')
         .order('review_date', { ascending: false })
-        .limit(3)
+        .limit(6)
 
       if (unanswered && unanswered.length > 0) {
         for (const rev of unanswered) {
+          // Strict duplicate prevention: do not add a generic notification if an alert was already emitted
+          if (alertedReviewIds.has(rev.id)) continue
+
           notifications.push({
             id: `rev-${rev.id}`,
             title: `Unanswered ${rev.rating}-Star Review`,
@@ -515,6 +564,7 @@ export async function getDashboardNotificationsAction(
             timestamp: new Date(rev.review_date).toLocaleDateString(),
             type: 'review',
             link: '/dashboard/reviews',
+            rating: rev.rating,
           })
         }
       }

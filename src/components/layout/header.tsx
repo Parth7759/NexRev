@@ -12,6 +12,7 @@ import {
   Sparkles,
   MessageSquare,
   AlertCircle,
+  ShieldAlert,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -254,12 +255,18 @@ export function Header() {
                           setNotificationsOpen(false);
                         }}
                         className={`block px-4 py-3 hover:bg-slate-50 transition-colors ${
-                          !isRead ? "bg-emerald-50/30" : "bg-white"
+                          !isRead
+                            ? n.type === "negative_alert"
+                              ? "bg-red-50/40 border-l-2 border-red-500"
+                              : "bg-emerald-50/30"
+                            : "bg-white"
                         }`}
                       >
                         <div className="flex items-start gap-2.5">
                           <div className="mt-0.5 shrink-0">
-                            {n.type === "review" ? (
+                            {n.type === "negative_alert" ? (
+                              <ShieldAlert className="w-4 h-4 text-red-600" />
+                            ) : n.type === "review" ? (
                               <MessageSquare className="w-4 h-4 text-amber-500" />
                             ) : n.type === "draft" ? (
                               <Sparkles className="w-4 h-4 text-emerald-600" />
@@ -271,9 +278,24 @@ export function Header() {
                           </div>
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center justify-between gap-1">
-                              <p className={`text-xs ${!isRead ? "font-semibold text-slate-900" : "text-slate-700"}`}>
-                                {n.title}
-                              </p>
+                              <div className="flex items-center gap-1.5 min-w-0">
+                                <p
+                                  className={`text-xs truncate ${
+                                    !isRead
+                                      ? n.type === "negative_alert"
+                                        ? "font-semibold text-red-950"
+                                        : "font-semibold text-slate-900"
+                                      : "text-slate-700"
+                                  }`}
+                                >
+                                  {n.title}
+                                </p>
+                                {n.type === "negative_alert" && !isRead && (
+                                  <span className="text-[9px] font-semibold text-red-700 bg-red-100/80 px-1 py-0.2 rounded shrink-0">
+                                    Urgent
+                                  </span>
+                                )}
+                              </div>
                               <span className="text-[10px] text-slate-400 shrink-0 font-mono">{n.timestamp}</span>
                             </div>
                             <p className="text-[11px] text-slate-500 mt-0.5 line-clamp-2 leading-relaxed">

@@ -113,7 +113,7 @@ export const TOUR_STEPS: TourStep[] = [
     id: "step-team",
     title: "Team Collaboration & Roles",
     description:
-      "Invite team members, assign secure Owner, Admin, or Member roles with strict multi-tenant isolation, and configure automatic email notifications for new customer reviews.",
+      "Invite team members, assign secure Owner, Admin, or Member roles with strict multi-tenant isolation, and manage real-time in-app dashboard review notifications.",
     targetId: "tour-nav-team",
     route: "/dashboard/team",
     placement: "right",

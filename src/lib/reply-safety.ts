@@ -13,6 +13,8 @@ export interface WorkspaceReplySettings {
   businessContext: string
   autoReplyMinRating: number
   autoReplyDelayMinutes: number
+  negativeReviewAlertsEnabled?: boolean
+  negativeReviewAlertThreshold?: number // 2 (1-2 stars) or 3 (1-3 stars)
 }
 
 export const DEFAULT_REPLY_SETTINGS: Omit<WorkspaceReplySettings, 'workspaceId'> = {
@@ -22,6 +24,69 @@ export const DEFAULT_REPLY_SETTINGS: Omit<WorkspaceReplySettings, 'workspaceId'>
   businessContext: '',
   autoReplyMinRating: 4,
   autoReplyDelayMinutes: 5,
+  negativeReviewAlertsEnabled: true,
+  negativeReviewAlertThreshold: 3,
+}
+
+/**
+ * Extracts clean user business context text and embedded in-app configuration.
+ * Avoids schema alterations by safely embedding extra preferences without migrations.
+ */
+export function parseBusinessContextAndConfig(raw: string | null | undefined): {
+  cleanBusinessContext: string
+  negativeReviewAlertsEnabled: boolean
+  negativeReviewAlertThreshold: number
+} {
+  if (!raw) {
+    return {
+      cleanBusinessContext: '',
+      negativeReviewAlertsEnabled: true,
+      negativeReviewAlertThreshold: 3,
+    }
+  }
+
+  const match = raw.match(/<!--nexrep-config:([\s\S]*?)-->/)
+  let alertsEnabled = true
+  let alertThreshold = 3
+
+  if (match && match[1]) {
+    try {
+      const parsed = JSON.parse(match[1])
+      if (typeof parsed.negativeReviewAlertsEnabled === 'boolean') {
+        alertsEnabled = parsed.negativeReviewAlertsEnabled
+      }
+      if (typeof parsed.negativeReviewAlertThreshold === 'number') {
+        alertThreshold = Math.min(5, Math.max(1, parsed.negativeReviewAlertThreshold))
+      }
+    } catch {
+      // Fallback to defaults if JSON corrupt
+    }
+  }
+
+  const cleanText = raw.replace(/<!--nexrep-config:[\s\S]*?-->/g, '').trim()
+  return {
+    cleanBusinessContext: cleanText,
+    negativeReviewAlertsEnabled: alertsEnabled,
+    negativeReviewAlertThreshold: alertThreshold,
+  }
+}
+
+/**
+ * Serializes clean business context text and in-app alert configuration.
+ */
+export function packBusinessContextAndConfig(
+  cleanText: string,
+  config: {
+    negativeReviewAlertsEnabled: boolean
+    negativeReviewAlertThreshold: number
+  }
+): string {
+  const trimmed = (cleanText || '').replace(/<!--nexrep-config:[\s\S]*?-->/g, '').trim()
+  const configStr = JSON.stringify({
+    negativeReviewAlertsEnabled: Boolean(config.negativeReviewAlertsEnabled),
+    negativeReviewAlertThreshold: config.negativeReviewAlertThreshold ?? 3,
+  })
+  return trimmed ? `${trimmed}\n<!--nexrep-config:${configStr}-->` : `<!--nexrep-config:${configStr}-->`
 }
 
 /**
@@ -69,14 +134,19 @@ export async function getWorkspaceReplySettings(
       }
     }
 
+    const { cleanBusinessContext, negativeReviewAlertsEnabled, negativeReviewAlertThreshold } =
+      parseBusinessContextAndConfig(data.business_context)
+
     return {
       workspaceId: data.workspace_id,
       autoReplyMode: data.auto_reply_mode,
       requireApprovalForCritical: data.require_approval_for_critical,
       defaultReplyTone: data.default_reply_tone,
-      businessContext: data.business_context || '',
+      businessContext: cleanBusinessContext,
       autoReplyMinRating: data.auto_reply_min_rating,
       autoReplyDelayMinutes: data.auto_reply_delay_minutes,
+      negativeReviewAlertsEnabled,
+      negativeReviewAlertThreshold,
     }
   } catch {
     return {

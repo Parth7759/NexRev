@@ -128,3 +128,26 @@
     @apply font-sans;
   }
 }
+
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  #printable-standee-card,
+  #printable-standee-card * {
+    visibility: visible;
+  }
+  #printable-standee-card {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    width: 100% !important;
+    max-width: 420px !important;
+    box-shadow: none !important;
+    border: 2px solid #111 !important;
+    background: #fff !important;
+    color: #000 !important;
+    page-break-inside: avoid;
+  }
+}

@@ -381,12 +381,101 @@ export interface Database {
         }
         Relationships: []
       }
+      qr_codes: {
+        Row: {
+          id: string
+          workspace_id: string
+          location_id: string
+          public_slug: string
+          title: string
+          call_to_action: string
+          custom_google_review_url: string | null
+          is_active: boolean
+          metadata: Json
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          workspace_id: string
+          location_id: string
+          public_slug: string
+          title?: string
+          call_to_action?: string
+          custom_google_review_url?: string | null
+          is_active?: boolean
+          metadata?: Json
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          workspace_id?: string
+          location_id?: string
+          public_slug?: string
+          title?: string
+          call_to_action?: string
+          custom_google_review_url?: string | null
+          is_active?: boolean
+          metadata?: Json
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      qr_code_events: {
+        Row: {
+          id: string
+          qr_code_id: string
+          workspace_id: string
+          event_type: 'scan' | 'google_click' | 'suggestion_generated'
+          metadata: Json
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          qr_code_id: string
+          workspace_id: string
+          event_type: 'scan' | 'google_click' | 'suggestion_generated'
+          metadata?: Json
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          qr_code_id?: string
+          workspace_id?: string
+          event_type?: 'scan' | 'google_click' | 'suggestion_generated'
+          metadata?: Json
+          created_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      get_public_qr_landing_data: {
+        Args: {
+          target_slug: string
+        }
+        Returns: {
+          id: string
+          title: string
+          call_to_action: string
+          custom_google_review_url: string | null
+          business_name: string
+          address: string | null
+          google_place_id: string | null
+        }[]
+      }
+      record_public_qr_event: {
+        Args: {
+          p_qr_code_id: string
+          p_event_type: string
+        }
+        Returns: boolean
+      }
     }
     Enums: {
       [_ in never]: never

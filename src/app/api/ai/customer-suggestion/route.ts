@@ -1,15 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/utils/supabase/server'
-import { generateCustomerReviewSuggestion, CustomerSuggestionTone } from '@/lib/customer-review-assistant'
-import { checkRateLimit } from '@/lib/rate-limit'
+import {
+  generateCustomerReviewSuggestion,
+  generateMultiStyleReviewSuggestions,
+  CustomerSuggestionTone,
+} from '@/lib/customer-review-assistant'
+import { checkRateLimit, getClientIpFromHeaders } from '@/lib/rate-limit'
 
 export async function POST(request: NextRequest) {
   try {
     const supabase = await createClient()
     const { data: { user } } = await supabase.auth.getUser()
 
-    // Rate limiting: 10 requests / minute (by user ID if logged in, or IP header)
-    const identifier = user?.id || request.headers.get('x-forwarded-for') || 'guest-session'
+    // Rate limiting: 10 requests / minute (by user ID if logged in, or verified edge IP)
+    const identifier = user?.id || `ip:${getClientIpFromHeaders(request.headers)}`
     const rateLimit = checkRateLimit(identifier, 10, 60 * 1000)
     if (!rateLimit.success) {
       const seconds = Math.ceil(rateLimit.resetMs / 1000)
@@ -23,7 +27,16 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json()
-    const { businessName, rating, tags, experienceTags, serviceOrProduct, customerNotes, tone } = body
+    const {
+      businessName,
+      rating,
+      tags,
+      experienceTags,
+      serviceOrProduct,
+      customerNotes,
+      tone,
+      multiStyle,
+    } = body
 
     if (!businessName || typeof businessName !== 'string') {
       return NextResponse.json(
@@ -32,14 +45,29 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const validTones: CustomerSuggestionTone[] = ['natural', 'detailed', 'concise', 'constructive']
-    const selectedTone: CustomerSuggestionTone = validTones.includes(tone) ? tone : 'natural'
-
     const resolvedTags = Array.isArray(experienceTags)
       ? experienceTags.map(String)
       : Array.isArray(tags)
       ? tags.map(String)
       : []
+
+    if (multiStyle || tone === 'all') {
+      const multiResult = await generateMultiStyleReviewSuggestions({
+        businessName: businessName.trim(),
+        rating: rating ? Number(rating) : undefined,
+        experienceTags: resolvedTags,
+        serviceOrProduct: typeof serviceOrProduct === 'string' ? serviceOrProduct : undefined,
+        customerNotes: typeof customerNotes === 'string' ? customerNotes : undefined,
+      })
+
+      if (!multiResult.success) {
+        return NextResponse.json(multiResult, { status: 400 })
+      }
+      return NextResponse.json(multiResult)
+    }
+
+    const validTones: CustomerSuggestionTone[] = ['natural', 'detailed', 'concise', 'constructive']
+    const selectedTone: CustomerSuggestionTone = validTones.includes(tone) ? tone : 'natural'
 
     const result = await generateCustomerReviewSuggestion({
       businessName: businessName.trim(),

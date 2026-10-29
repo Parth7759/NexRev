@@ -42,6 +42,7 @@ export interface SyncLocationsResult {
   success: boolean
   locationsCount: number
   reviewsCount: number
+  negativeReviewsCount?: number
   message: string
   reviewsMessage?: string
   error?: string
@@ -484,9 +485,13 @@ export async function syncActiveLocationAction(
     )
 
     let totalReviewsSynced = 0
+    let negativeReviewsSynced = 0
 
     if (reviewsResult.supported && reviewsResult.reviews.length > 0) {
       for (const rev of reviewsResult.reviews) {
+        if (rev.rating <= 3) {
+          negativeReviewsSynced++
+        }
         const sentiment: 'positive' | 'neutral' | 'negative' =
           rev.rating >= 4 ? 'positive' : rev.rating === 3 ? 'neutral' : 'negative'
         const status: 'unanswered' | 'answered' = rev.reply ? 'answered' : 'unanswered'
@@ -600,7 +605,10 @@ export async function syncActiveLocationAction(
       success: true,
       locationsCount: 1,
       reviewsCount: totalReviewsSynced,
-      message: `Successfully synchronized reviews for "${activeLoc.name}".`,
+      negativeReviewsCount: negativeReviewsSynced,
+      message: negativeReviewsSynced > 0
+        ? `Successfully synced ${totalReviewsSynced} reviews (${negativeReviewsSynced} negative review${negativeReviewsSynced === 1 ? '' : 's'} flagged for attention in in-app alerts).`
+        : `Successfully synchronized reviews for "${activeLoc.name}".`,
       reviewsMessage: reviewsResult.message,
     }
   } catch (err: unknown) {

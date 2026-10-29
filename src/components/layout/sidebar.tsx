@@ -22,6 +22,7 @@ import {
   CheckCircle2,
   X,
   HelpCircle,
+  QrCode,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -59,6 +60,7 @@ export const navigationGroups: { title: string; items: NavItem[] }[] = [
     title: "Reputation",
     items: [
       { name: "Reviews & AI Replies", href: "/dashboard/reviews", icon: MessageSquare, id: "tour-nav-reviews" },
+      { name: "QR Review Studio", href: "/dashboard/qr", icon: QrCode, id: "tour-nav-qr" },
       { name: "Google Posts", href: "/dashboard/posts", icon: Send, id: "tour-nav-posts" },
       { name: "Local SEO & Keywords", href: "/dashboard/seo", icon: Compass, id: "tour-nav-seo" },
     ],
