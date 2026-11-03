@@ -28,6 +28,7 @@ interface InvitationData {
   workspaceId: string;
   expiresAt: string;
   isExpired: boolean;
+  status?: string;
 }
 
 function InviteContent({

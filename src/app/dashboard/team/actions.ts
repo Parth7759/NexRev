@@ -18,6 +18,8 @@ export interface TeamMemberItem {
   isCurrentUser: boolean
 }
 
+export type InvitationStatus = 'pending' | 'accepted' | 'expired' | 'revoked'
+
 export interface PendingInvitationItem {
   id: string
   workspaceId: string
@@ -26,6 +28,7 @@ export interface PendingInvitationItem {
   token: string
   expiresAt: string
   createdAt: string
+  status: InvitationStatus
   isExpired: boolean
   inviteLink?: string
 }
@@ -129,8 +132,8 @@ export async function getTeamMembersAction(workspaceId: string): Promise<{
 }
 
 /**
- * Server Action: Fetches pending and active invitations for the workspace.
- * Requires workspace membership.
+ * Server Action: Fetches all invitations (pending, accepted, expired, revoked) for the workspace.
+ * Requires 'owner' or 'admin' role.
  */
 export async function getPendingInvitationsAction(workspaceId: string): Promise<{
   success: boolean
@@ -165,26 +168,57 @@ export async function getPendingInvitationsAction(workspaceId: string): Promise<
     return { success: false, invitations: [], error: error.message }
   }
 
+  // Cross-reference with active members to accurately determine accepted status
+  const { data: currentMembers } = await supabase
+    .from('workspace_members')
+    .select('user_id, profiles(email)')
+    .eq('workspace_id', workspaceId)
+
+  const activeMemberEmails = new Set(
+    (currentMembers || [])
+      .map((m) => (m.profiles as unknown as { email?: string })?.email?.toLowerCase())
+      .filter(Boolean)
+  )
+
   const now = new Date()
-  const invitations: PendingInvitationItem[] = (data || []).map((inv) => ({
-    id: inv.id,
-    workspaceId: inv.workspace_id,
-    email: inv.email,
-    role: inv.role as 'admin' | 'member',
-    token: inv.token,
-    expiresAt: inv.expires_at,
-    createdAt: inv.created_at,
-    isExpired: new Date(inv.expires_at) < now,
-    inviteLink: `${origin}/invite/${inv.token}`,
-  }))
+  const invitations: PendingInvitationItem[] = (data || []).map((inv) => {
+    const isRevoked = inv.token.startsWith('revoked_')
+    const isAccepted = inv.token.startsWith('accepted_') || activeMemberEmails.has(inv.email.toLowerCase())
+    const isExpired = !isAccepted && !isRevoked && new Date(inv.expires_at) < now
+
+    let status: InvitationStatus = 'pending'
+    if (isAccepted) {
+      status = 'accepted'
+    } else if (isRevoked) {
+      status = 'revoked'
+    } else if (isExpired) {
+      status = 'expired'
+    }
+
+    const cleanToken = inv.token.replace(/^(revoked_|accepted_)/, '')
+
+    return {
+      id: inv.id,
+      workspaceId: inv.workspace_id,
+      email: inv.email,
+      role: inv.role as 'admin' | 'member',
+      token: inv.token,
+      expiresAt: inv.expires_at,
+      createdAt: inv.created_at,
+      status,
+      isExpired: new Date(inv.expires_at) < now,
+      inviteLink: `${origin}/invite/${cleanToken}`,
+    }
+  })
 
   return { success: true, invitations }
 }
 
 /**
- * Server Action: Invites or assigns a team member by email to the workspace.
+ * Server Action: Invites a team member by email to the workspace.
  * Requires 'owner' or 'admin' role.
- * Accurately reports email provider status and provides an instant shareable link.
+ * Generates an expiring invitation link, sends invitation email, and does NOT
+ * grant workspace access until the invited person accepts.
  */
 export async function inviteTeamMemberAction(params: {
   workspaceId: string
@@ -202,7 +236,7 @@ export async function inviteTeamMemberAction(params: {
   const { data: { user }, error: authError } = await supabase.auth.getUser()
 
   if (authError || !user) {
-    return { success: false, error: 'You must be signed in.' }
+    return { success: false, error: 'You must be signed in to invite team members.' }
   }
 
   const membership = await verifyWorkspaceMembership(supabase, params.workspaceId, [
@@ -222,15 +256,14 @@ export async function inviteTeamMemberAction(params: {
     return { success: false, error: 'A valid email address is required.' }
   }
 
-  // Check if user with this email already exists in profiles
+  // Check if this user is ALREADY an active member of the workspace
   const { data: existingProfile } = await supabase
     .from('profiles')
-    .select('id, email, full_name')
+    .select('id, email')
     .eq('email', cleanEmail)
     .maybeSingle()
 
   if (existingProfile) {
-    // Check if already a member
     const { data: existingMember } = await supabase
       .from('workspace_members')
       .select('id')
@@ -239,24 +272,7 @@ export async function inviteTeamMemberAction(params: {
       .maybeSingle()
 
     if (existingMember) {
-      return { success: false, error: 'This user is already a member of this workspace.' }
-    }
-
-    // Add directly to workspace
-    const { error: insertErr } = await supabase.from('workspace_members').insert({
-      workspace_id: params.workspaceId,
-      user_id: existingProfile.id,
-      role: params.role,
-    })
-
-    if (insertErr) {
-      return { success: false, error: insertErr.message }
-    }
-
-    revalidatePath('/dashboard/team', 'page')
-    return {
-      success: true,
-      message: `User ${cleanEmail} has been added directly to the workspace as ${params.role}.`,
+      return { success: false, error: 'This user is already an active member of this workspace.' }
     }
   }
 
@@ -266,8 +282,9 @@ export async function inviteTeamMemberAction(params: {
   const origin = await getOrigin()
   const inviteLink = `${origin}/invite/${token}`
 
-  // Upsert into workspace_invitations
-  const { error: inviteErr } = await supabase.from('workspace_invitations').upsert(
+  // Upsert into workspace_invitations (unique on workspace_id, email)
+  const adminClient = createAdminClient()
+  const { error: inviteErr } = await adminClient.from('workspace_invitations').upsert(
     {
       workspace_id: params.workspaceId,
       email: cleanEmail,
@@ -286,19 +303,35 @@ export async function inviteTeamMemberAction(params: {
     }
   }
 
+  // Attempt to send invitation email via Supabase Auth admin mailer
+  let emailSent = false
+  try {
+    const { error: sendErr } = await adminClient.auth.admin.inviteUserByEmail(cleanEmail, {
+      redirectTo: inviteLink,
+    })
+    if (!sendErr) {
+      emailSent = true
+    }
+  } catch {
+    emailSent = false
+  }
+
   revalidatePath('/dashboard/team', 'page')
 
   return {
     success: true,
-    message: `Invitation created for ${cleanEmail}. Email delivery is not configured, so share the link directly.`,
+    message: emailSent
+      ? `Invitation sent via email to ${cleanEmail}.`
+      : `Invitation link generated for ${cleanEmail}. Outbound email delivery is not configured, so share the link directly.`,
     inviteLink,
     token,
-    emailSent: false,
+    emailSent,
   }
 }
 
 /**
- * Server Action: Revokes / cancels a pending invitation.
+ * Server Action: Revokes a pending or active invitation.
+ * Requires 'owner' or 'admin' role.
  */
 export async function revokeInvitationAction(params: {
   workspaceId: string
@@ -310,18 +343,127 @@ export async function revokeInvitationAction(params: {
     return { success: false, error: 'Only owners and administrators can revoke invitations.' }
   }
 
-  const { error } = await supabase
+  const adminClient = createAdminClient()
+  const { data: inv, error: findErr } = await adminClient
     .from('workspace_invitations')
-    .delete()
+    .select('id, token')
+    .eq('id', params.invitationId)
+    .eq('workspace_id', params.workspaceId)
+    .maybeSingle()
+
+  if (findErr || !inv) {
+    return { success: false, error: 'Invitation not found.' }
+  }
+
+  const targetToken = inv.token.startsWith('revoked_') ? inv.token : `revoked_${inv.token}`
+  const { error: updateErr } = await adminClient
+    .from('workspace_invitations')
+    .update({ token: targetToken })
     .eq('id', params.invitationId)
     .eq('workspace_id', params.workspaceId)
 
-  if (error) {
-    return { success: false, error: error.message }
+  if (updateErr) {
+    return { success: false, error: updateErr.message }
   }
 
   revalidatePath('/dashboard/team', 'page')
   return { success: true }
+}
+
+/**
+ * Server Action: Resends an existing invitation with a fresh token and expiration.
+ * Requires 'owner' or 'admin' role.
+ */
+export async function resendInvitationAction(params: {
+  workspaceId: string
+  invitationId: string
+}): Promise<{
+  success: boolean
+  message?: string
+  error?: string
+  inviteLink?: string
+  emailSent?: boolean
+}> {
+  const supabase = await createClient()
+  const membership = await verifyWorkspaceMembership(supabase, params.workspaceId, ['owner', 'admin'])
+  if (!membership.isMember) {
+    return { success: false, error: 'Only owners and administrators can resend invitations.' }
+  }
+
+  const adminClient = createAdminClient()
+  const { data: inv, error: findErr } = await adminClient
+    .from('workspace_invitations')
+    .select('id, email, role, workspace_id')
+    .eq('id', params.invitationId)
+    .eq('workspace_id', params.workspaceId)
+    .maybeSingle()
+
+  if (findErr || !inv) {
+    return { success: false, error: 'Invitation not found.' }
+  }
+
+  // Check if this recipient already joined
+  const { data: existingProfile } = await adminClient
+    .from('profiles')
+    .select('id')
+    .eq('email', inv.email.toLowerCase())
+    .maybeSingle()
+
+  if (existingProfile) {
+    const { data: isMember } = await adminClient
+      .from('workspace_members')
+      .select('id')
+      .eq('workspace_id', params.workspaceId)
+      .eq('user_id', existingProfile.id)
+      .maybeSingle()
+
+    if (isMember) {
+      return {
+        success: false,
+        error: `${inv.email} has already accepted the invitation and is an active member of this workspace.`,
+      }
+    }
+  }
+
+  const newToken = crypto.randomBytes(24).toString('hex')
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+  const origin = await getOrigin()
+  const inviteLink = `${origin}/invite/${newToken}`
+
+  const { error: updateErr } = await adminClient
+    .from('workspace_invitations')
+    .update({
+      token: newToken,
+      expires_at: expiresAt,
+    })
+    .eq('id', params.invitationId)
+    .eq('workspace_id', params.workspaceId)
+
+  if (updateErr) {
+    return { success: false, error: `Failed to refresh invitation: ${updateErr.message}` }
+  }
+
+  let emailSent = false
+  try {
+    const { error: sendErr } = await adminClient.auth.admin.inviteUserByEmail(inv.email, {
+      redirectTo: inviteLink,
+    })
+    if (!sendErr) {
+      emailSent = true
+    }
+  } catch {
+    emailSent = false
+  }
+
+  revalidatePath('/dashboard/team', 'page')
+  return {
+    success: true,
+    message: emailSent
+      ? `Invitation resent via email to ${inv.email}.`
+      : `Invitation link refreshed for ${inv.email}. Outbound email is inactive, so copy the link.`,
+    inviteLink,
+    emailSent,
+  }
 }
 
 /**
@@ -337,14 +479,17 @@ export async function validateInvitationTokenAction(token: string): Promise<{
     workspaceId: string
     expiresAt: string
     isExpired: boolean
+    status: InvitationStatus
   }
 }> {
   if (!token || token.trim() === '') {
     return { valid: false, error: 'Missing invitation token.' }
   }
 
+  const trimmedToken = token.trim()
   const adminClient = createAdminClient()
 
+  // 1. Direct token lookup
   const { data: inv, error } = await adminClient
     .from('workspace_invitations')
     .select(`
@@ -358,11 +503,54 @@ export async function validateInvitationTokenAction(token: string): Promise<{
         name
       )
     `)
-    .eq('token', token.trim())
+    .eq('token', trimmedToken)
     .maybeSingle()
 
+  // 2. If direct match not found, check if token was revoked or accepted
   if (error || !inv) {
+    const { data: revokedInv } = await adminClient
+      .from('workspace_invitations')
+      .select('id, email, token, expires_at, workspace_id, workspaces:workspace_id (name)')
+      .eq('token', `revoked_${trimmedToken}`)
+      .maybeSingle()
+
+    if (revokedInv) {
+      return {
+        valid: false,
+        error: 'This invitation has been revoked. Please request a new invite from your workspace administrator.',
+      }
+    }
+
+    const { data: acceptedInv } = await adminClient
+      .from('workspace_invitations')
+      .select('id, email, token, expires_at, workspace_id, workspaces:workspace_id (name)')
+      .eq('token', `accepted_${trimmedToken}`)
+      .maybeSingle()
+
+    if (acceptedInv) {
+      return {
+        valid: false,
+        error: 'This invitation has already been accepted. You can log in directly to access the workspace.',
+      }
+    }
+
     return { valid: false, error: 'Invitation not found or has been revoked.' }
+  }
+
+  const workspaceName = (inv.workspaces as unknown as { name?: string })?.name || 'Workspace'
+
+  if (inv.token.startsWith('revoked_')) {
+    return {
+      valid: false,
+      error: 'This invitation has been revoked. Please request a new invite from your workspace administrator.',
+    }
+  }
+
+  if (inv.token.startsWith('accepted_')) {
+    return {
+      valid: false,
+      error: 'This invitation has already been accepted. You can log in directly to access the workspace.',
+    }
   }
 
   const isExpired = new Date(inv.expires_at) < new Date()
@@ -373,10 +561,11 @@ export async function validateInvitationTokenAction(token: string): Promise<{
       invitation: {
         email: inv.email,
         role: inv.role as 'admin' | 'member',
-        workspaceName: (inv.workspaces as unknown as { name?: string })?.name || 'Workspace',
+        workspaceName,
         workspaceId: inv.workspace_id,
         expiresAt: inv.expires_at,
         isExpired: true,
+        status: 'expired',
       },
     }
   }
@@ -386,10 +575,11 @@ export async function validateInvitationTokenAction(token: string): Promise<{
     invitation: {
       email: inv.email,
       role: inv.role as 'admin' | 'member',
-      workspaceName: (inv.workspaces as unknown as { name?: string })?.name || 'Workspace',
+      workspaceName,
       workspaceId: inv.workspace_id,
       expiresAt: inv.expires_at,
       isExpired: false,
+      status: 'pending',
     },
   }
 }
@@ -411,6 +601,7 @@ export async function acceptInvitationAction(token: string): Promise<{
     return { success: false, error: 'You must be signed in to accept an invitation.' }
   }
 
+  const trimmedToken = token.trim()
   const adminClient = createAdminClient()
 
   // 1. Look up invitation
@@ -421,16 +612,46 @@ export async function acceptInvitationAction(token: string): Promise<{
       workspace_id,
       email,
       role,
+      token,
       expires_at,
       workspaces:workspace_id (
         name
       )
     `)
-    .eq('token', token.trim())
+    .eq('token', trimmedToken)
     .maybeSingle()
 
   if (findErr || !inv) {
-    return { success: false, error: 'Invalid invitation token.' }
+    // Check if already revoked or accepted
+    const { data: revokedInv } = await adminClient
+      .from('workspace_invitations')
+      .select('id')
+      .eq('token', `revoked_${trimmedToken}`)
+      .maybeSingle()
+
+    if (revokedInv) {
+      return { success: false, error: 'This invitation has been revoked.' }
+    }
+
+    const { data: acceptedInv } = await adminClient
+      .from('workspace_invitations')
+      .select('id')
+      .eq('token', `accepted_${trimmedToken}`)
+      .maybeSingle()
+
+    if (acceptedInv) {
+      return { success: false, error: 'This invitation has already been accepted.' }
+    }
+
+    return { success: false, error: 'Invalid or expired invitation token.' }
+  }
+
+  if (inv.token.startsWith('revoked_')) {
+    return { success: false, error: 'This invitation has been revoked.' }
+  }
+
+  if (inv.token.startsWith('accepted_')) {
+    return { success: false, error: 'This invitation has already been accepted.' }
   }
 
   if (new Date(inv.expires_at) < new Date()) {
@@ -458,29 +679,25 @@ export async function acceptInvitationAction(token: string): Promise<{
     .eq('user_id', user.id)
     .maybeSingle()
 
-  if (existingMember) {
-    // Clean up invitation if redundant
-    await adminClient.from('workspace_invitations').delete().eq('id', inv.id)
-    return {
-      success: true,
-      workspaceId: inv.workspace_id,
-      workspaceName,
+  if (!existingMember) {
+    // Add to workspace_members
+    const { error: joinErr } = await adminClient.from('workspace_members').insert({
+      workspace_id: inv.workspace_id,
+      user_id: user.id,
+      role: inv.role,
+    })
+
+    if (joinErr) {
+      return { success: false, error: `Failed to join workspace: ${joinErr.message}` }
     }
   }
 
-  // 3. Add to workspace_members
-  const { error: joinErr } = await adminClient.from('workspace_members').insert({
-    workspace_id: inv.workspace_id,
-    user_id: user.id,
-    role: inv.role,
-  })
-
-  if (joinErr) {
-    return { success: false, error: `Failed to join workspace: ${joinErr.message}` }
-  }
-
-  // 4. Delete the accepted invitation
-  await adminClient.from('workspace_invitations').delete().eq('id', inv.id)
+  // 4. Update the invitation token to accepted status (preserve record for audit & status display)
+  const acceptedToken = inv.token.startsWith('accepted_') ? inv.token : `accepted_${inv.token}`
+  await adminClient
+    .from('workspace_invitations')
+    .update({ token: acceptedToken })
+    .eq('id', inv.id)
 
   revalidatePath('/dashboard', 'layout')
   revalidatePath('/dashboard/team', 'page')
@@ -529,6 +746,8 @@ export async function updateMemberRoleAction(params: {
 
 /**
  * Server Action: Removes a member from the workspace.
+ * Owners can remove any member (except the sole owner).
+ * Admins can remove members, but cannot remove owners or other admins.
  */
 export async function removeMemberAction(params: {
   workspaceId: string
@@ -549,14 +768,24 @@ export async function removeMemberAction(params: {
     return { success: false, error: 'You do not have permission to remove members.' }
   }
 
-  // Prevent removing sole owner
+  // Fetch the target member to inspect their role
   const { data: targetMember } = await supabase
     .from('workspace_members')
     .select('user_id, role')
     .eq('id', params.memberId)
     .single()
 
-  if (targetMember?.role === 'owner') {
+  if (!targetMember) {
+    return { success: false, error: 'Target member not found.' }
+  }
+
+  // Admins cannot remove owners or other admins
+  if (membership.role === 'admin' && (targetMember.role === 'owner' || targetMember.role === 'admin')) {
+    return { success: false, error: 'Administrators cannot remove other administrators or workspace owners.' }
+  }
+
+  // Prevent removing sole owner
+  if (targetMember.role === 'owner') {
     const { count } = await supabase
       .from('workspace_members')
       .select('*', { count: 'exact', head: true })

@@ -358,6 +358,8 @@ export interface Database {
           token: string
           expires_at: string
           created_at: string
+          status?: 'pending' | 'accepted' | 'expired' | 'revoked'
+          updated_at?: string
         }
         Insert: {
           id?: string
@@ -368,6 +370,8 @@ export interface Database {
           token?: string
           expires_at?: string
           created_at?: string
+          status?: 'pending' | 'accepted' | 'expired' | 'revoked'
+          updated_at?: string
         }
         Update: {
           id?: string
@@ -378,6 +382,8 @@ export interface Database {
           token?: string
           expires_at?: string
           created_at?: string
+          status?: 'pending' | 'accepted' | 'expired' | 'revoked'
+          updated_at?: string
         }
         Relationships: []
       }

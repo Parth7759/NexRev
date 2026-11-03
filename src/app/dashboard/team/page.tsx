@@ -20,8 +20,11 @@ import {
   Copy,
   Check,
   Clock,
+  RotateCw,
   Send,
   Info,
+  Mail,
+  Ban,
 } from "lucide-react";
 import { useWorkspace } from "@/contexts/workspace-context";
 import {
@@ -29,20 +32,26 @@ import {
   getPendingInvitationsAction,
   inviteTeamMemberAction,
   revokeInvitationAction,
+  resendInvitationAction,
   updateMemberRoleAction,
   removeMemberAction,
   TeamMemberItem,
   PendingInvitationItem,
+  InvitationStatus,
 } from "./actions";
 import { WorkspaceRole } from "@/types/database.types";
 
 export default function TeamPage() {
   const { activeWorkspaceId, activeWorkspace, isLoading: isWorkspaceLoading } = useWorkspace();
   const [members, setMembers] = useState<TeamMemberItem[]>([]);
-  const [pendingInvitations, setPendingInvitations] = useState<PendingInvitationItem[]>([]);
+  const [invitations, setInvitations] = useState<PendingInvitationItem[]>([]);
   const [callerRole, setCallerRole] = useState<WorkspaceRole | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  // Invitation status filter
+  const [statusFilter, setStatusFilter] = useState<"all" | InvitationStatus>("all");
 
   const isLoading = isWorkspaceLoading || (!isLoaded && Boolean(activeWorkspaceId));
 
@@ -59,6 +68,7 @@ export default function TeamPage() {
 
   // Copied link state feedback
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [resendingId, setResendingId] = useState<string | null>(null);
 
   const refreshData = useCallback(async () => {
     if (!activeWorkspaceId) return;
@@ -72,7 +82,7 @@ export default function TeamPage() {
         setCallerRole(membersRes.callerRole);
       }
       if (invitesRes.success) {
-        setPendingInvitations(invitesRes.invitations);
+        setInvitations(invitesRes.invitations);
       }
     } catch (err: unknown) {
       console.error("Error refreshing team data:", err);
@@ -96,7 +106,7 @@ export default function TeamPage() {
           setError(membersRes.error || "Failed to load team members.");
         }
         if (invitesRes.success) {
-          setPendingInvitations(invitesRes.invitations);
+          setInvitations(invitesRes.invitations);
         }
         setIsLoaded(true);
       })
@@ -150,9 +160,11 @@ export default function TeamPage() {
       newRole,
     });
     if (res.success) {
+      setActionNotice({ type: "success", text: "Role updated successfully." });
       refreshData();
+      setTimeout(() => setActionNotice(null), 4000);
     } else {
-      alert(res.error || "Failed to change role.");
+      setActionNotice({ type: "error", text: res.error || "Failed to change role." });
     }
   };
 
@@ -165,9 +177,11 @@ export default function TeamPage() {
       memberId,
     });
     if (res.success) {
+      setActionNotice({ type: "success", text: `${name} has been removed from the workspace.` });
       refreshData();
+      setTimeout(() => setActionNotice(null), 4000);
     } else {
-      alert(res.error || "Failed to remove member.");
+      setActionNotice({ type: "error", text: res.error || "Failed to remove member." });
     }
   };
 
@@ -180,9 +194,30 @@ export default function TeamPage() {
       invitationId,
     });
     if (res.success) {
+      setActionNotice({ type: "success", text: `Invitation for ${email} has been revoked.` });
       refreshData();
+      setTimeout(() => setActionNotice(null), 4000);
     } else {
-      alert(res.error || "Failed to revoke invitation.");
+      setActionNotice({ type: "error", text: res.error || "Failed to revoke invitation." });
+    }
+  };
+
+  const handleResendInvitation = async (invitationId: string, email: string) => {
+    if (!activeWorkspaceId) return;
+    setResendingId(invitationId);
+
+    const res = await resendInvitationAction({
+      workspaceId: activeWorkspaceId,
+      invitationId,
+    });
+    setResendingId(null);
+
+    if (res.success) {
+      setActionNotice({ type: "success", text: res.message || `Invitation resent to ${email}.` });
+      refreshData();
+      setTimeout(() => setActionNotice(null), 4000);
+    } else {
+      setActionNotice({ type: "error", text: res.error || "Failed to resend invitation." });
     }
   };
 
@@ -197,13 +232,23 @@ export default function TeamPage() {
   const isManager = callerRole === "owner" || callerRole === "admin";
   const isOwner = callerRole === "owner";
 
+  const filteredInvitations = invitations.filter((inv) => {
+    if (statusFilter === "all") return true;
+    return inv.status === statusFilter;
+  });
+
+  const pendingCount = invitations.filter((i) => i.status === "pending").length;
+  const acceptedCount = invitations.filter((i) => i.status === "accepted").length;
+  const expiredCount = invitations.filter((i) => i.status === "expired").length;
+  const revokedCount = invitations.filter((i) => i.status === "revoked").length;
+
   return (
     <div className="space-y-6 max-w-7xl w-full">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight text-slate-900">Team Members</h2>
+          <h2 className="text-2xl font-bold tracking-tight text-slate-900">Team Collaboration</h2>
           <p className="text-slate-500 text-sm">
-            Manage who has access to &ldquo;{activeWorkspace?.name || "your workspace"}&rdquo; and their authorization roles.
+            Manage authorized members of &ldquo;{activeWorkspace?.name || "your workspace"}&rdquo; and invite new collaborators.
           </p>
         </div>
         {isManager && (
@@ -219,6 +264,32 @@ export default function TeamPage() {
         )}
       </div>
 
+      {actionNotice && (
+        <div
+          className={`p-3 text-xs rounded-xl flex items-center justify-between border ${
+            actionNotice.type === "success"
+              ? "bg-emerald-50 border-emerald-200 text-emerald-950"
+              : "bg-red-50 border-red-200 text-red-950"
+          }`}
+        >
+          <div className="flex items-center gap-2">
+            {actionNotice.type === "success" ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            ) : (
+              <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+            )}
+            <span>{actionNotice.text}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setActionNotice(null)}
+            className="text-slate-400 hover:text-slate-600 p-0.5"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
       {error && (
         <div className="p-3 text-xs rounded-lg bg-red-50 border border-red-200 text-red-800 flex items-center gap-2">
           <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
@@ -232,7 +303,7 @@ export default function TeamPage() {
           <div>
             <CardTitle className="text-base font-semibold">Active Members</CardTitle>
             <CardDescription className="text-xs">
-              Users with access to manage reviews, locations, and integrations.
+              Users with verified access to manage reviews, locations, and integrations.
             </CardDescription>
           </div>
           <span className="text-xs font-mono font-medium text-slate-500">
@@ -315,7 +386,9 @@ export default function TeamPage() {
                         </Badge>
                       )}
 
-                      {isManager && !member.isCurrentUser && member.role !== "owner" && (
+                      {/* Remove member button: Owner can remove anyone (except self). Admin can remove members only */}
+                      {((isOwner && !member.isCurrentUser && member.role !== "owner") ||
+                        (callerRole === "admin" && !member.isCurrentUser && member.role === "member")) && (
                         <Button
                           variant="ghost"
                           size="icon"
@@ -335,84 +408,197 @@ export default function TeamPage() {
         </CardContent>
       </Card>
 
-      {/* Pending Invitations Card */}
-      {isManager && pendingInvitations.length > 0 && (
+      {/* Workspace Invitations Management Card */}
+      {isManager && (
         <Card className="border-slate-200 bg-white shadow-xs">
-          <CardHeader className="pb-3 border-b border-slate-100 flex flex-row items-center justify-between">
+          <CardHeader className="pb-3 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div>
               <CardTitle className="text-base font-semibold flex items-center gap-2">
-                <Clock className="w-4 h-4 text-amber-500" /> Pending Invitations
+                <Mail className="w-4 h-4 text-blue-600" /> Workspace Invitations
               </CardTitle>
               <CardDescription className="text-xs">
-                Invitations waiting for the recipient to join. Share the invite link directly.
+                Track pending, accepted, expired, and revoked invitation links.
               </CardDescription>
             </div>
-            <span className="text-xs font-mono font-medium text-slate-500">
-              {pendingInvitations.length} pending
-            </span>
+
+            {/* Status Filter Tabs */}
+            <div className="flex items-center gap-1 bg-slate-100 p-0.5 rounded-lg text-xs">
+              <button
+                type="button"
+                onClick={() => setStatusFilter("all")}
+                className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${
+                  statusFilter === "all"
+                    ? "bg-white text-slate-900 shadow-2xs"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                All ({invitations.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setStatusFilter("pending")}
+                className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${
+                  statusFilter === "pending"
+                    ? "bg-white text-amber-900 shadow-2xs"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                Pending ({pendingCount})
+              </button>
+              <button
+                type="button"
+                onClick={() => setStatusFilter("accepted")}
+                className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${
+                  statusFilter === "accepted"
+                    ? "bg-white text-emerald-900 shadow-2xs"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                Accepted ({acceptedCount})
+              </button>
+              <button
+                type="button"
+                onClick={() => setStatusFilter("expired")}
+                className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${
+                  statusFilter === "expired"
+                    ? "bg-white text-rose-900 shadow-2xs"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                Expired ({expiredCount})
+              </button>
+              <button
+                type="button"
+                onClick={() => setStatusFilter("revoked")}
+                className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all ${
+                  statusFilter === "revoked"
+                    ? "bg-white text-slate-900 shadow-2xs"
+                    : "text-slate-600 hover:text-slate-900"
+                }`}
+              >
+                Revoked ({revokedCount})
+              </button>
+            </div>
           </CardHeader>
           <CardContent className="pt-4">
-            <div className="space-y-3">
-              {pendingInvitations.map((inv) => (
-                <div
-                  key={inv.id}
-                  className="flex flex-col sm:flex-row sm:items-center justify-between p-3.5 border border-slate-200 rounded-xl bg-slate-50/50 hover:bg-slate-50 transition-colors gap-3"
-                >
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <p className="text-xs font-semibold text-slate-900 truncate">{inv.email}</p>
-                      <Badge
-                        variant="outline"
-                        className={`text-[10px] capitalize font-medium ${
-                          inv.isExpired
-                            ? "border-red-200 bg-red-50 text-red-700"
-                            : "border-amber-200 bg-amber-50 text-amber-700"
-                        }`}
-                      >
-                        {inv.isExpired ? "Expired" : "Pending"}
-                      </Badge>
-                      <Badge variant="outline" className="text-[10px] capitalize text-slate-600 border-slate-200">
-                        {inv.role}
-                      </Badge>
-                    </div>
-                    <p className="text-[11px] text-slate-500 mt-0.5">
-                      Expires {new Date(inv.expiresAt).toLocaleDateString()}
-                    </p>
-                  </div>
+            {filteredInvitations.length === 0 ? (
+              <div className="py-10 text-center text-slate-400 text-xs">
+                No invitations found in this category.
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {filteredInvitations.map((inv) => {
+                  const isPending = inv.status === "pending";
+                  const isAccepted = inv.status === "accepted";
+                  const isExpired = inv.status === "expired";
+                  const isRevoked = inv.status === "revoked";
 
-                  <div className="flex items-center gap-2 shrink-0">
-                    {inv.inviteLink && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => copyToClipboard(inv.inviteLink!, inv.id)}
-                        className="text-xs h-8 gap-1.5 border-slate-200 text-slate-700 hover:bg-white"
-                      >
-                        {copiedId === inv.id ? (
-                          <>
-                            <Check className="w-3.5 h-3.5 text-emerald-600" /> Copied Link
-                          </>
-                        ) : (
-                          <>
-                            <Copy className="w-3.5 h-3.5 text-slate-500" /> Copy Link
-                          </>
-                        )}
-                      </Button>
-                    )}
-
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => handleRevokeInvitation(inv.id, inv.email)}
-                      title="Revoke invitation"
-                      className="h-8 w-8 text-slate-400 hover:text-red-600 hover:bg-red-50"
+                  return (
+                    <div
+                      key={inv.id}
+                      className="flex flex-col sm:flex-row sm:items-center justify-between p-3.5 border border-slate-200 rounded-xl bg-slate-50/50 hover:bg-slate-50 transition-colors gap-3"
                     >
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
-                  </div>
-                </div>
-              ))}
-            </div>
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <p className="text-xs font-semibold text-slate-900 truncate">{inv.email}</p>
+                          <Badge
+                            variant="outline"
+                            className={`text-[10px] capitalize font-medium ${
+                              isPending
+                                ? "border-amber-200 bg-amber-50 text-amber-800"
+                                : isAccepted
+                                ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                                : isExpired
+                                ? "border-rose-200 bg-rose-50 text-rose-800"
+                                : "border-slate-300 bg-slate-100 text-slate-600"
+                            }`}
+                          >
+                            {isPending && <Clock className="w-3 h-3 mr-1 text-amber-600" />}
+                            {isAccepted && <CheckCircle2 className="w-3 h-3 mr-1 text-emerald-600" />}
+                            {isExpired && <AlertCircle className="w-3 h-3 mr-1 text-rose-600" />}
+                            {isRevoked && <Ban className="w-3 h-3 mr-1 text-slate-500" />}
+                            {inv.status}
+                          </Badge>
+                          <Badge variant="outline" className="text-[10px] capitalize text-slate-600 border-slate-200">
+                            {inv.role}
+                          </Badge>
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          {isAccepted ? (
+                            <span className="text-emerald-700 font-medium">Joined workspace</span>
+                          ) : isRevoked ? (
+                            <span className="text-slate-500">Invitation revoked</span>
+                          ) : isExpired ? (
+                            <span className="text-rose-600 font-medium">
+                              Expired {new Date(inv.expiresAt).toLocaleDateString()}
+                            </span>
+                          ) : (
+                            <span>Expires {new Date(inv.expiresAt).toLocaleDateString()}</span>
+                          )}
+                        </p>
+                      </div>
+
+                      <div className="flex items-center gap-2 shrink-0">
+                        {/* Copy Link button (pending only) */}
+                        {isPending && inv.inviteLink && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => copyToClipboard(inv.inviteLink!, inv.id)}
+                            className="text-xs h-8 gap-1.5 border-slate-200 text-slate-700 hover:bg-white"
+                          >
+                            {copiedId === inv.id ? (
+                              <>
+                                <Check className="w-3.5 h-3.5 text-emerald-600" /> Copied Link
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="w-3.5 h-3.5 text-slate-500" /> Copy Link
+                              </>
+                            )}
+                          </Button>
+                        )}
+
+                        {/* Resend button (pending, expired, or revoked) */}
+                        {!isAccepted && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={resendingId === inv.id}
+                            onClick={() => handleResendInvitation(inv.id, inv.email)}
+                            title="Resend invitation with fresh token"
+                            className="text-xs h-8 gap-1.5 border-slate-200 text-slate-700 hover:bg-white"
+                          >
+                            {resendingId === inv.id ? (
+                              <>
+                                <Loader2 className="w-3 h-3 animate-spin" /> Resending...
+                              </>
+                            ) : (
+                              <>
+                                <RotateCw className="w-3 h-3 text-slate-500" /> Resend
+                              </>
+                            )}
+                          </Button>
+                        )}
+
+                        {/* Revoke button (pending only) */}
+                        {isPending && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => handleRevokeInvitation(inv.id, inv.email)}
+                            title="Revoke invitation"
+                            className="h-8 w-8 text-slate-400 hover:text-red-600 hover:bg-red-50"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
@@ -428,7 +614,7 @@ export default function TeamPage() {
                 </div>
                 <div>
                   <h4 className="font-semibold text-sm text-slate-900">Invite Team Member</h4>
-                  <p className="text-xs text-slate-500">Add a colleague to {activeWorkspace?.name || "workspace"}</p>
+                  <p className="text-xs text-slate-500">Send an invitation to join {activeWorkspace?.name || "this workspace"}</p>
                 </div>
               </div>
               <button
@@ -445,14 +631,14 @@ export default function TeamPage() {
                 <div className="p-3.5 rounded-xl text-xs bg-emerald-50 border border-emerald-200 text-emerald-950 flex items-start gap-2.5">
                   <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
                   <div>
-                    <p className="font-semibold text-emerald-900">Invitation Ready</p>
+                    <p className="font-semibold text-emerald-900">Invitation Dispatched</p>
                     <p className="text-emerald-800 mt-0.5">{inviteResult.message}</p>
                   </div>
                 </div>
 
                 {inviteResult.inviteLink && (
                   <div className="space-y-2">
-                    <Label className="text-xs font-medium text-slate-700">Shareable Invitation Link</Label>
+                    <Label className="text-xs font-medium text-slate-700">Direct Invitation Link</Label>
                     <div className="flex gap-2">
                       <Input
                         readOnly
@@ -478,8 +664,7 @@ export default function TeamPage() {
                     <div className="flex items-start gap-1.5 text-[11px] text-slate-500 pt-1">
                       <Info className="w-3.5 h-3.5 shrink-0 mt-0.5 text-slate-400" />
                       <span>
-                        Email delivery service (e.g. Resend/SMTP) is not configured in environment variables. Send this
-                        direct invitation link to your teammate.
+                        The invitation link is valid for 7 days. Workspace access is not granted until the recipient accepts.
                       </span>
                     </div>
                   </div>
@@ -508,7 +693,7 @@ export default function TeamPage() {
 
                 <div className="space-y-1.5">
                   <Label htmlFor="invite-email" className="text-xs font-medium text-slate-700">
-                    Colleague&apos;s Email Address
+                    Recipient Email Address
                   </Label>
                   <Input
                     id="invite-email"
@@ -525,7 +710,7 @@ export default function TeamPage() {
 
                 <div className="space-y-1.5">
                   <Label htmlFor="invite-role" className="text-xs font-medium text-slate-700">
-                    Role & Permissions
+                    Assigned Role & Permissions
                   </Label>
                   <select
                     id="invite-role"
@@ -534,18 +719,17 @@ export default function TeamPage() {
                     disabled={isInviting}
                     className="w-full h-9 rounded-xl border border-slate-200 bg-white px-3 text-xs text-slate-800 shadow-2xs focus:outline-none focus:ring-1 focus:ring-slate-900"
                   >
-                    <option value="member">Member — View reviews, generate replies, manage drafts</option>
-                    <option value="admin">Admin — Manage Google profiles, team members & safety policies</option>
+                    <option value="member">Member — View reviews, draft AI replies, view QR codes</option>
+                    <option value="admin">Admin — Manage team members, Google locations, QR codes & settings</option>
                   </select>
                 </div>
 
                 <div className="rounded-lg bg-slate-50 border border-slate-200/80 p-3 text-[11px] text-slate-500 space-y-1">
                   <p className="font-medium text-slate-700 flex items-center gap-1">
-                    <Send className="w-3 h-3 text-slate-500" /> Delivery Notice
+                    <Send className="w-3 h-3 text-slate-500" /> Security Guarantee
                   </p>
                   <p>
-                    Because outbound email delivery is not configured, creating this invitation will generate a secure,
-                    instant join link for you to share directly.
+                    Invited users cannot access workspace reviews, locations, or settings until they sign in with this exact email address and accept the invitation.
                   </p>
                 </div>
 
@@ -568,10 +752,10 @@ export default function TeamPage() {
                   >
                     {isInviting ? (
                       <>
-                        <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> Creating...
+                        <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" /> Sending...
                       </>
                     ) : (
-                      "Create Invitation"
+                      "Send Invitation"
                     )}
                   </Button>
                 </div>

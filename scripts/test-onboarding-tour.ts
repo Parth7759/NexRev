@@ -35,9 +35,9 @@ console.log('===================================================================
 // -----------------------------------------------------------------------------
 // Suite 1: Tour Steps Definition & Coverage
 // -----------------------------------------------------------------------------
-console.log('--- Suite 1: Tour Steps Definition & Coverage (All 11 Modules) ---')
+console.log('--- Suite 1: Tour Steps Definition & Coverage (All 10 Modules, Billing Hidden) ---')
 
-assert(TOUR_STEPS.length === 11, 'Tour contains exactly 11 guided steps', `Got ${TOUR_STEPS.length}`)
+assert(TOUR_STEPS.length === 10, 'Tour contains exactly 10 guided steps', `Got ${TOUR_STEPS.length}`)
 
 const expectedTargetIds = [
   'tour-location-selector',
@@ -48,17 +48,16 @@ const expectedTargetIds = [
   'tour-nav-posts',
   'tour-nav-seo',
   'tour-nav-reports',
-  'tour-nav-billing',
   'tour-nav-team',
   'tour-bottom-profile',
 ]
 
 const actualTargetIds = TOUR_STEPS.map((s) => s.targetId)
 const allTargetsPresent = expectedTargetIds.every((id) => actualTargetIds.includes(id))
-assert(allTargetsPresent, 'All 11 target IDs correctly mapped to UI elements')
+assert(allTargetsPresent, 'All 10 target IDs correctly mapped to UI elements')
 
 const uniqueStepIds = new Set(TOUR_STEPS.map((s) => s.id))
-assert(uniqueStepIds.size === 11, 'All step IDs are unique')
+assert(uniqueStepIds.size === 10, 'All step IDs are unique')
 
 const allStepsHaveDescriptions = TOUR_STEPS.every(
   (s) => s.title.trim().length > 0 && s.description.trim().length > 20
@@ -201,11 +200,11 @@ assert(sm.currentStepIndex === 0, 'prev() returns from Step 1 to Step 0')
 sm.prev()
 assert(sm.currentStepIndex === 0, 'prev() at Step 0 safely clamps at 0 (never negative)')
 
-// Fast forward to step 10
-for (let i = 0; i < 10; i++) {
+// Fast forward to final step (index 9)
+for (let i = 0; i < 9; i++) {
   sm.next()
 }
-assert(sm.currentStepIndex === 10, 'Step progression reaches final step (Step 10 of 10)')
+assert(sm.currentStepIndex === 9, 'Step progression reaches final step (Step 10 of 10)')
 
 // Step past final step should complete tour
 sm.next()
@@ -244,11 +243,8 @@ assert(stepSeo?.route === '/dashboard/seo', 'Step 7 (Local SEO) targets /dashboa
 const stepReports = TOUR_STEPS.find((s) => s.targetId === 'tour-nav-reports')
 assert(stepReports?.route === '/dashboard/reports', 'Step 8 (Reports) targets /dashboard/reports')
 
-const stepBilling = TOUR_STEPS.find((s) => s.targetId === 'tour-nav-billing')
-assert(stepBilling?.route === '/dashboard/billing', 'Step 9 (Billing) targets /dashboard/billing')
-
 const stepTeam = TOUR_STEPS.find((s) => s.targetId === 'tour-nav-team')
-assert(stepTeam?.route === '/dashboard/team', 'Step 10 (Team) targets /dashboard/team')
+assert(stepTeam?.route === '/dashboard/team', 'Step 9 (Team) targets /dashboard/team')
 
 // -----------------------------------------------------------------------------
 // Suite 5: Missing / Off-Screen Target Element Resilience

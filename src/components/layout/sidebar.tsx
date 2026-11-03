@@ -12,7 +12,6 @@ import {
   Send,
   Compass,
   FileBarChart,
-  CreditCard,
   Users,
   Settings,
   Building2,
@@ -69,7 +68,6 @@ export const navigationGroups: { title: string; items: NavItem[] }[] = [
     title: "Reporting & Account",
     items: [
       { name: "Reports", href: "/dashboard/reports", icon: FileBarChart, id: "tour-nav-reports" },
-      { name: "Plans & Billing", href: "/dashboard/billing", icon: CreditCard, id: "tour-nav-billing" },
       { name: "Team", href: "/dashboard/team", icon: Users, id: "tour-nav-team" },
       { name: "Settings", href: "/dashboard/settings", icon: Settings, id: "tour-nav-settings" },
     ],
@@ -332,17 +330,6 @@ export function SidebarNavigation({ onNavigate }: { onNavigate?: () => void }) {
                 >
                   <span className="flex items-center gap-2 font-medium">
                     <Settings className="w-3.5 h-3.5 text-slate-500" /> Security & Automation Settings
-                  </span>
-                  <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
-                </Link>
-
-                <Link
-                  href="/dashboard/billing"
-                  onClick={() => setProfileModalOpen(false)}
-                  className="flex items-center justify-between p-2.5 rounded-lg hover:bg-slate-100/70 text-slate-700 transition-colors"
-                >
-                  <span className="flex items-center gap-2 font-medium">
-                    <CreditCard className="w-3.5 h-3.5 text-slate-500" /> Plans & Subscription
                   </span>
                   <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
                 </Link>

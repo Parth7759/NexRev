@@ -19,7 +19,7 @@ export const TOUR_STEPS: TourStep[] = [
     route: "/dashboard",
     placement: "bottom",
     category: "Overview",
-    badge: "1 of 11",
+    badge: "1 of 10",
   },
   {
     id: "step-kpi-cards",
@@ -30,7 +30,7 @@ export const TOUR_STEPS: TourStep[] = [
     route: "/dashboard",
     placement: "bottom",
     category: "Overview",
-    badge: "2 of 11",
+    badge: "2 of 10",
   },
   {
     id: "step-analytics",
@@ -41,7 +41,7 @@ export const TOUR_STEPS: TourStep[] = [
     route: "/dashboard/analytics",
     placement: "right",
     category: "Overview",
-    badge: "3 of 11",
+    badge: "3 of 10",
   },
   {
     id: "step-audit",
@@ -52,7 +52,7 @@ export const TOUR_STEPS: TourStep[] = [
     route: "/dashboard/audit",
     placement: "right",
     category: "Overview",
-    badge: "4 of 11",
+    badge: "4 of 10",
   },
   {
     id: "step-reviews",
@@ -63,7 +63,7 @@ export const TOUR_STEPS: TourStep[] = [
     route: "/dashboard/reviews",
     placement: "right",
     category: "Reputation",
-    badge: "5 of 11",
+    badge: "5 of 10",
   },
   {
     id: "step-posts",
@@ -74,7 +74,7 @@ export const TOUR_STEPS: TourStep[] = [
     route: "/dashboard/posts",
     placement: "right",
     category: "Reputation",
-    badge: "6 of 11",
+    badge: "6 of 10",
   },
   {
     id: "step-seo",
@@ -85,7 +85,7 @@ export const TOUR_STEPS: TourStep[] = [
     route: "/dashboard/seo",
     placement: "right",
     category: "Reputation",
-    badge: "7 of 11",
+    badge: "7 of 10",
   },
   {
     id: "step-reports",
@@ -96,18 +96,7 @@ export const TOUR_STEPS: TourStep[] = [
     route: "/dashboard/reports",
     placement: "right",
     category: "Reporting",
-    badge: "8 of 11",
-  },
-  {
-    id: "step-billing",
-    title: "Plans & Subscription Billing",
-    description:
-      "Review your active location quota, plan entitlements, and proposed scaling tiers (Starter, Growth, Pro, Agency) designed to fit single-location shops up to regional multi-unit franchises.",
-    targetId: "tour-nav-billing",
-    route: "/dashboard/billing",
-    placement: "right",
-    category: "Reporting",
-    badge: "9 of 11",
+    badge: "8 of 10",
   },
   {
     id: "step-team",
@@ -118,7 +107,7 @@ export const TOUR_STEPS: TourStep[] = [
     route: "/dashboard/team",
     placement: "right",
     category: "Reporting",
-    badge: "10 of 11",
+    badge: "9 of 10",
   },
   {
     id: "step-bottom-profile",
@@ -129,6 +118,6 @@ export const TOUR_STEPS: TourStep[] = [
     route: "/dashboard",
     placement: "top",
     category: "Account",
-    badge: "11 of 11",
+    badge: "10 of 10",
   },
 ];
