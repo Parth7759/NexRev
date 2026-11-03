@@ -665,6 +665,21 @@ function LocationsContent() {
                         </span>
                       </div>
                     )}
+                    {activeLocation.updated_at && (
+                      <div>
+                        <span className="text-[10px] uppercase font-semibold text-slate-400 block tracking-wider">
+                          Last Synchronized
+                        </span>
+                        <span className="text-[10px] text-slate-700 block font-medium">
+                          {new Date(activeLocation.updated_at).toLocaleString(undefined, {
+                            month: "short",
+                            day: "numeric",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>

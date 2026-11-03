@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/utils/supabase/admin'
 import { autoProcessWorkspaceUnansweredReviews } from '@/lib/reply-automation'
+import { syncAllActiveWorkspacesGoogleReviews } from '@/lib/google-review-sync'
 
 /**
  * Scheduled Cron Job Endpoint: /api/cron/process-replies
  *
- * Automatically scans unanswered customer reviews across authorized workspaces,
- * generates personalized AI replies for every rating (1 to 5 stars),
- * and automatically publishes or saves as drafts according to each workspace's configured policy.
+ * 1. Automatically synchronizes new and edited Google Business Profile reviews across active connected workspaces.
+ * 2. Scans unanswered customer reviews and generates personalized AI replies for every rating (1 to 5 stars).
+ * 3. Automatically publishes or saves as drafts according to each workspace's configured safety policy.
  *
  * Security:
  * - In production, requires `Authorization: Bearer <CRON_SECRET>` or `?secret=<CRON_SECRET>`.
@@ -65,15 +66,31 @@ async function handleCronExecution(request: NextRequest) {
   try {
     const supabase = createAdminClient()
 
-    const result = await autoProcessWorkspaceUnansweredReviews(supabase, {
+    // Step 1: Automatically synchronize new Google reviews for connected workspaces
+    const syncResult = await syncAllActiveWorkspacesGoogleReviews(supabase, {
+      workspaceId,
+      dryRun: isDryRun,
+    })
+
+    // Step 2: Automatically process unanswered reviews according to workspace reply policy
+    const processResult = await autoProcessWorkspaceUnansweredReviews(supabase, {
       workspaceId,
       limit,
       dryRun: isDryRun,
     })
 
     return NextResponse.json({
+      success: syncResult.success && processResult.success,
       timestamp: new Date().toISOString(),
-      ...result,
+      dryRun: isDryRun,
+      sync: syncResult,
+      replies: processResult,
+      scanned: processResult.scanned,
+      processed: processResult.processed,
+      draftsCreated: processResult.draftsCreated,
+      published: processResult.published,
+      skipped: processResult.skipped,
+      failed: processResult.failed,
     })
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : 'Internal cron execution failure'

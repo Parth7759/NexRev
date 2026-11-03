@@ -7,10 +7,9 @@ import {
   getValidGoogleAccessToken,
   fetchGoogleAccounts,
   fetchGoogleLocations,
-  fetchGoogleReviews,
   GoogleApiError,
 } from '@/lib/google-business'
-import { autoProcessSingleReview } from '@/lib/reply-automation'
+import { syncWorkspaceGoogleReviews } from '@/lib/google-review-sync'
 
 export interface GoogleLocationProfile {
   googleLocationId: string
@@ -228,113 +227,13 @@ export async function selectSingleGoogleProfileAction(
       })
       .eq('workspace_id', workspaceId)
 
-    // 5. Sync reviews ONLY for this selected profile
+    // 5. Sync reviews strictly for this newly selected profile
     let reviewsCount = 0
     try {
-      const { accessToken } = await getValidGoogleAccessToken(supabase, workspaceId)
-      const reviewsResult = await fetchGoogleReviews(
-        accessToken,
-        profile.googleAccountId,
-        profile.googleLocationId
-      )
-
-      if (reviewsResult.supported && reviewsResult.reviews.length > 0) {
-        for (const rev of reviewsResult.reviews) {
-          const sentiment: 'positive' | 'neutral' | 'negative' =
-            rev.rating >= 4 ? 'positive' : rev.rating === 3 ? 'neutral' : 'negative'
-          const status: 'unanswered' | 'answered' = rev.reply ? 'answered' : 'unanswered'
-
-          const { data: existingReview } = await supabase
-            .from('reviews')
-            .select('id')
-            .eq('workspace_id', workspaceId)
-            .eq('external_review_id', rev.reviewId)
-            .maybeSingle()
-
-          let reviewDbId: string | null = null
-
-          if (existingReview?.id) {
-            const { data: updatedRev } = await supabase
-              .from('reviews')
-              .update({
-                location_id: locationDbId,
-                author_name: rev.authorName,
-                author_photo_url: rev.authorPhotoUrl,
-                rating: rev.rating,
-                content: rev.content,
-                review_date: rev.reviewDate,
-                status,
-                sentiment,
-                updated_at: new Date().toISOString(),
-              })
-              .eq('id', existingReview.id)
-              .select('id')
-              .single()
-
-            reviewDbId = updatedRev?.id || existingReview.id
-          } else {
-            const { data: insertedRev } = await supabase
-              .from('reviews')
-              .insert({
-                workspace_id: workspaceId,
-                location_id: locationDbId,
-                author_name: rev.authorName,
-                author_photo_url: rev.authorPhotoUrl,
-                rating: rev.rating,
-                content: rev.content,
-                review_date: rev.reviewDate,
-                source: 'google',
-                status,
-                sentiment,
-                external_review_id: rev.reviewId,
-              })
-              .select('id')
-              .single()
-
-            reviewDbId = insertedRev?.id || null
-          }
-
-          reviewsCount++
-
-          // Sync replies
-          if (reviewDbId && rev.reply?.comment) {
-            const { data: existingReply } = await supabase
-              .from('review_replies')
-              .select('id')
-              .eq('review_id', reviewDbId)
-              .maybeSingle()
-
-            if (existingReply?.id) {
-              await supabase
-                .from('review_replies')
-                .update({
-                  content: rev.reply.comment,
-                  updated_at: new Date().toISOString(),
-                })
-                .eq('id', existingReply.id)
-            } else {
-              await supabase.from('review_replies').insert({
-                review_id: reviewDbId,
-                workspace_id: workspaceId,
-                content: rev.reply.comment,
-                is_ai_generated: false,
-                status: 'published',
-              })
-            }
-          } else if (reviewDbId && !rev.reply?.comment) {
-            // Unanswered review: auto-generate draft / process per policy
-            try {
-              await autoProcessSingleReview(supabase, {
-                reviewId: reviewDbId,
-                workspaceId,
-                userId: user?.id || null,
-              })
-            } catch (autoErr) {
-              console.warn(`Auto-reply skipped for review ${reviewDbId}:`, autoErr)
-            }
-          }
-        }
-      }
+      const syncRes = await syncWorkspaceGoogleReviews(supabase, workspaceId, {
+        userId: user?.id || null,
+      })
+      reviewsCount = syncRes.totalFetched
     } catch (syncErr) {
       console.warn('Initial review sync on profile selection completed with notice:', syncErr)
     }
@@ -444,172 +343,34 @@ export async function syncActiveLocationAction(
       }
     }
 
-    // Find the single active connected location
-    const { data: activeLoc, error: locError } = await supabase
-      .from('locations')
-      .select('*')
-      .eq('workspace_id', workspaceId)
-      .eq('is_connected', true)
-      .maybeSingle()
-
-    if (locError || !activeLoc) {
-      return {
-        success: false,
-        locationsCount: 0,
-        reviewsCount: 0,
-        message: '',
-        error:
-          'No active business profile is connected for this workspace. Please select and connect a business profile first.',
-      }
-    }
-
-    if (!activeLoc.google_location_id || !activeLoc.google_account_id) {
-      return {
-        success: false,
-        locationsCount: 0,
-        reviewsCount: 0,
-        message: '',
-        error:
-          'Connected business profile has invalid Google mapping. Please reconnect or reselect your profile.',
-      }
-    }
-
-    // Get valid access token
-    const { accessToken } = await getValidGoogleAccessToken(supabase, workspaceId)
-
-    // Sync reviews ONLY for this active location
-    const reviewsResult = await fetchGoogleReviews(
-      accessToken,
-      activeLoc.google_account_id,
-      activeLoc.google_location_id
-    )
-
-    let totalReviewsSynced = 0
-    let negativeReviewsSynced = 0
-
-    if (reviewsResult.supported && reviewsResult.reviews.length > 0) {
-      for (const rev of reviewsResult.reviews) {
-        if (rev.rating <= 3) {
-          negativeReviewsSynced++
-        }
-        const sentiment: 'positive' | 'neutral' | 'negative' =
-          rev.rating >= 4 ? 'positive' : rev.rating === 3 ? 'neutral' : 'negative'
-        const status: 'unanswered' | 'answered' = rev.reply ? 'answered' : 'unanswered'
-
-        const { data: existingReview } = await supabase
-          .from('reviews')
-          .select('id')
-          .eq('workspace_id', workspaceId)
-          .eq('external_review_id', rev.reviewId)
-          .maybeSingle()
-
-        let reviewDbId: string | null = null
-
-        if (existingReview?.id) {
-          const { data: updatedRev } = await supabase
-            .from('reviews')
-            .update({
-              location_id: activeLoc.id,
-              author_name: rev.authorName,
-              author_photo_url: rev.authorPhotoUrl,
-              rating: rev.rating,
-              content: rev.content,
-              review_date: rev.reviewDate,
-              status,
-              sentiment,
-              updated_at: new Date().toISOString(),
-            })
-            .eq('id', existingReview.id)
-            .select('id')
-            .single()
-
-          reviewDbId = updatedRev?.id || existingReview.id
-        } else {
-          const { data: insertedRev } = await supabase
-            .from('reviews')
-            .insert({
-              workspace_id: workspaceId,
-              location_id: activeLoc.id,
-              author_name: rev.authorName,
-              author_photo_url: rev.authorPhotoUrl,
-              rating: rev.rating,
-              content: rev.content,
-              review_date: rev.reviewDate,
-              source: 'google',
-              status,
-              sentiment,
-              external_review_id: rev.reviewId,
-            })
-            .select('id')
-            .single()
-
-          reviewDbId = insertedRev?.id || null
-        }
-
-        totalReviewsSynced++
-
-        if (reviewDbId && rev.reply?.comment) {
-          const { data: existingReply } = await supabase
-            .from('review_replies')
-            .select('id')
-            .eq('review_id', reviewDbId)
-            .maybeSingle()
-
-          if (existingReply?.id) {
-            await supabase
-              .from('review_replies')
-              .update({
-                content: rev.reply.comment,
-                updated_at: new Date().toISOString(),
-              })
-              .eq('id', existingReply.id)
-          } else {
-            await supabase.from('review_replies').insert({
-              review_id: reviewDbId,
-              workspace_id: workspaceId,
-              content: rev.reply.comment,
-              is_ai_generated: false,
-              status: 'published',
-            })
-          }
-        } else if (reviewDbId && !rev.reply?.comment) {
-          try {
-            await autoProcessSingleReview(supabase, {
-              reviewId: reviewDbId,
-              workspaceId,
-              userId: user?.id || null,
-            })
-          } catch (autoErr) {
-            console.warn(`Auto-reply skipped for review ${reviewDbId}:`, autoErr)
-          }
-        }
-      }
-    }
-
-    // Update location and integration timestamp
-    await supabase
-      .from('locations')
-      .update({ updated_at: new Date().toISOString() })
-      .eq('id', activeLoc.id)
-
-    await supabase
-      .from('google_integrations')
-      .update({ updated_at: new Date().toISOString() })
-      .eq('workspace_id', workspaceId)
+    // Delegate review synchronization to the centralized google-review-sync engine
+    const syncRes = await syncWorkspaceGoogleReviews(supabase, workspaceId, {
+      userId: user?.id || null,
+    })
 
     revalidatePath('/dashboard/locations')
     revalidatePath('/dashboard/reviews')
     revalidatePath('/dashboard')
 
+    if (!syncRes.success) {
+      return {
+        success: false,
+        locationsCount: 0,
+        reviewsCount: 0,
+        message: '',
+        error: syncRes.error || syncRes.message,
+      }
+    }
+
     return {
       success: true,
       locationsCount: 1,
-      reviewsCount: totalReviewsSynced,
-      negativeReviewsCount: negativeReviewsSynced,
-      message: negativeReviewsSynced > 0
-        ? `Successfully synced ${totalReviewsSynced} reviews (${negativeReviewsSynced} negative review${negativeReviewsSynced === 1 ? '' : 's'} flagged for attention in in-app alerts).`
-        : `Successfully synchronized reviews for "${activeLoc.name}".`,
-      reviewsMessage: reviewsResult.message,
+      reviewsCount: syncRes.totalFetched,
+      negativeReviewsCount: syncRes.negativeReviewsCount,
+      message: syncRes.negativeReviewsCount > 0
+        ? `Successfully synced ${syncRes.totalFetched} reviews (${syncRes.negativeReviewsCount} negative review${syncRes.negativeReviewsCount === 1 ? '' : 's'} flagged for attention in in-app alerts).`
+        : syncRes.message,
+      reviewsMessage: syncRes.message,
     }
   } catch (err: unknown) {
     if (err instanceof GoogleApiError) {
