@@ -30,6 +30,7 @@ import {
   disconnectGoogleProfileAction,
   syncActiveLocationAction,
   GoogleLocationProfile,
+  SyncLocationsResult,
 } from "./actions";
 
 interface GoogleIntegrationState {
@@ -84,12 +85,7 @@ function LocationsContent() {
   // User notifications
   const [actionSuccessNotice, setActionSuccessNotice] = useState<string | null>(null);
   const [actionErrorNotice, setActionErrorNotice] = useState<string | null>(null);
-  const [syncResult, setSyncResult] = useState<{
-    success: boolean;
-    message: string;
-    reviewsMessage?: string;
-    error?: string;
-  } | null>(null);
+  const [syncResult, setSyncResult] = useState<SyncLocationsResult | null>(null);
 
   // Load integration and active location from database
   const loadData = useCallback(async () => {
@@ -268,7 +264,7 @@ function LocationsContent() {
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Sync failed";
-      setSyncResult({ success: false, message: "", error: msg });
+      setSyncResult({ success: false, locationsCount: 0, reviewsCount: 0, message: "", error: msg });
     } finally {
       setIsSyncing(false);
     }
@@ -373,8 +369,8 @@ function LocationsContent() {
         <div
           className={`p-4 rounded-xl flex items-start text-sm shadow-sm border ${
             syncResult.success
-              ? "bg-blue-50 border-blue-200 text-blue-900"
-              : "bg-red-50 border-red-200 text-red-900"
+              ? "bg-blue-50/80 border-blue-200 text-blue-900"
+              : "bg-red-50/80 border-red-200 text-red-900"
           }`}
         >
           {syncResult.success ? (
@@ -382,16 +378,45 @@ function LocationsContent() {
           ) : (
             <AlertCircle className="w-5 h-5 mr-3 shrink-0 mt-0.5 text-red-600" />
           )}
-          <div className="space-y-1">
-            <strong>{syncResult.success ? "Sync Completed" : "Sync Failed"}</strong>
+          <div className="space-y-2 flex-1">
+            <div className="flex items-center justify-between">
+              <strong className="font-semibold">{syncResult.success ? "Google Sync Completed" : "Sync Failed"}</strong>
+              {syncResult.lastSyncedAt && (
+                <span className="text-xs text-slate-500">
+                  Last synced: {new Date(syncResult.lastSyncedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </span>
+              )}
+            </div>
             <p className="text-xs">{syncResult.success ? syncResult.message : syncResult.error}</p>
-            {syncResult.reviewsMessage && (
+            {syncResult.success && (
+              <div className="flex flex-wrap items-center gap-2 pt-1 text-xs">
+                <span className="bg-white border border-blue-200 px-2.5 py-1 rounded-md text-blue-800 font-medium">
+                  Fetched: {syncResult.reviewsCount}
+                </span>
+                <span className="bg-white border border-emerald-200 px-2.5 py-1 rounded-md text-emerald-800 font-medium">
+                  New: {syncResult.newReviewsCount ?? 0}
+                </span>
+                <span className="bg-white border border-amber-200 px-2.5 py-1 rounded-md text-amber-800 font-medium">
+                  Updated: {syncResult.updatedReviewsCount ?? 0}
+                </span>
+                <span className="bg-white border border-slate-200 px-2.5 py-1 rounded-md text-slate-700 font-medium">
+                  Unchanged: {syncResult.skippedReviewsCount ?? 0}
+                </span>
+              </div>
+            )}
+            {syncResult.reviewsMessage && syncResult.reviewsMessage !== syncResult.message && (
               <p className="text-xs text-blue-700 bg-blue-100/60 p-2 rounded mt-1.5 flex items-start gap-1.5">
                 <Info className="w-4 h-4 shrink-0 mt-0.5 text-blue-600" />
                 <span>{syncResult.reviewsMessage}</span>
               </p>
             )}
           </div>
+          <button
+            onClick={() => setSyncResult(null)}
+            className="text-slate-400 hover:text-slate-600 p-1 ml-2"
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
       )}
 

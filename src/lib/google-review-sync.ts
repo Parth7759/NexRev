@@ -34,6 +34,12 @@ export interface BatchSyncReviewsResult {
   lastSyncedAt: string
 }
 
+export interface SyncOptions {
+  dryRun?: boolean
+  userId?: string | null
+  skipAutoReply?: boolean
+}
+
 /**
  * Synchronizes Google Business Profile reviews for a specific workspace's single active connected profile.
  *
@@ -43,15 +49,15 @@ export interface BatchSyncReviewsResult {
  * 3. Fetches live reviews from the Google Business Profile API.
  * 4. Idempotently upserts reviews: detects newly posted reviews and edited reviews.
  * 5. Preserves existing review replies and reply history.
- * 6. Immediately triggers automated AI reply processing for newly discovered unanswered reviews.
+ * 6. Immediately triggers automated AI reply processing for newly discovered unanswered reviews (unless skipAutoReply is set).
  * 7. Updates synchronization timestamps on locations and google_integrations.
  */
 export async function syncWorkspaceGoogleReviews(
   supabase: TypedSupabaseClient,
   workspaceId: string,
-  options: { dryRun?: boolean; userId?: string | null } = {}
+  options: SyncOptions = {}
 ): Promise<SyncWorkspaceReviewsResult> {
-  const { dryRun = false, userId = null } = options
+  const { dryRun = false, userId = null, skipAutoReply = false } = options
   const nowIso = new Date().toISOString()
 
   if (!workspaceId) {
@@ -176,9 +182,9 @@ export async function syncWorkspaceGoogleReviews(
   )
 
   if (!reviewsResult.supported) {
-    // Graceful fallback when Google API permissions/quota are pending
+    // Report Google API permissions/connectivity failures instead of masking as success
     return {
-      success: true,
+      success: false,
       workspaceId,
       locationId: activeLoc.id,
       locationName: activeLoc.name,
@@ -189,7 +195,8 @@ export async function syncWorkspaceGoogleReviews(
       negativeReviewsCount: 0,
       skippedReviewsCount: 0,
       lastSyncedAt: nowIso,
-      message: reviewsResult.message || 'Google Business Profile Reviews API access pending.',
+      message: reviewsResult.message || 'Google Business Profile Reviews API access pending or unavailable.',
+      error: reviewsResult.message || 'Google Business Profile Reviews API error.',
     }
   }
 
@@ -227,10 +234,12 @@ export async function syncWorkspaceGoogleReviews(
       reviewDbId = existingReview.id
 
       // Detect if customer edited the review
+      const existingDateMs = existingReview.review_date ? new Date(existingReview.review_date).getTime() : 0
+      const revDateMs = rev.reviewDate ? new Date(rev.reviewDate).getTime() : 0
       const hasEdited =
         existingReview.rating !== rev.rating ||
         existingReview.content !== rev.content ||
-        existingReview.review_date !== rev.reviewDate
+        Math.abs(existingDateMs - revDateMs) > 1000
 
       if (hasEdited) {
         if (!dryRun) {
@@ -309,8 +318,8 @@ export async function syncWorkspaceGoogleReviews(
       }
     }
 
-    // Auto-reply processing for newly discovered unanswered reviews
-    if (reviewDbId && status === 'unanswered' && !dryRun) {
+    // Auto-reply processing for newly discovered unanswered reviews (unless skipAutoReply is set)
+    if (reviewDbId && status === 'unanswered' && !dryRun && !skipAutoReply) {
       try {
         await autoProcessSingleReview(supabase, {
           reviewId: reviewDbId,
@@ -358,9 +367,9 @@ export async function syncWorkspaceGoogleReviews(
  */
 export async function syncAllActiveWorkspacesGoogleReviews(
   supabase: TypedSupabaseClient,
-  options: { workspaceId?: string; dryRun?: boolean; userId?: string | null } = {}
+  options: { workspaceId?: string; dryRun?: boolean; userId?: string | null; skipAutoReply?: boolean } = {}
 ): Promise<BatchSyncReviewsResult> {
-  const { workspaceId, dryRun = false, userId = null } = options
+  const { workspaceId, dryRun = false, userId = null, skipAutoReply = false } = options
   const nowIso = new Date().toISOString()
 
   let targetWorkspaceIds: string[] = []
@@ -402,7 +411,7 @@ export async function syncAllActiveWorkspacesGoogleReviews(
 
   for (const wsId of targetWorkspaceIds) {
     try {
-      const res = await syncWorkspaceGoogleReviews(supabase, wsId, { dryRun, userId })
+      const res = await syncWorkspaceGoogleReviews(supabase, wsId, { dryRun, userId, skipAutoReply })
       if (res.success) {
         workspacesSynced++
         totalFetched += res.totalFetched

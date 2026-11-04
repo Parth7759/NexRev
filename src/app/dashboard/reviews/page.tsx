@@ -128,6 +128,7 @@ export default function ReviewsPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [isSyncingReviews, setIsSyncingReviews] = useState(false);
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [refreshCounter, setRefreshCounter] = useState(0);
 
   // Load reviews scoped to workspace and location
@@ -161,6 +162,19 @@ export default function ReviewsPage() {
 
         if (wsId) {
           if (isMounted) setActiveWorkspaceId(wsId);
+
+          // Fetch last synced timestamp for active connected location
+          const { data: locData } = await supabase
+            .from("locations")
+            .select("updated_at")
+            .eq("workspace_id", wsId)
+            .eq("is_connected", true)
+            .limit(1)
+            .maybeSingle();
+
+          if (locData && (locData as { updated_at: string | null }).updated_at && isMounted) {
+            setLastSyncedAt((locData as { updated_at: string }).updated_at);
+          }
 
           // Fetch reviews strictly scoped to workspace with exact location relationships
           const { data: liveReviews, error: revError } = await supabase
@@ -250,9 +264,14 @@ export default function ReviewsPage() {
     setSyncNotice(null);
     setErrorMessage(null);
     try {
-      const res = await syncGoogleLocationsAction(activeWorkspaceId);
+      const res = await syncGoogleLocationsAction(activeWorkspaceId, { skipAutoReply: true });
       if (res.success) {
-        setSyncNotice(`Successfully synced ${res.reviewsCount} reviews from Google Business Profile.`);
+        setSyncNotice(
+          `Google sync complete: ${res.reviewsCount} reviews checked (${res.newReviewsCount ?? 0} new inserted, ${res.updatedReviewsCount ?? 0} updated, ${res.skippedReviewsCount ?? 0} unchanged).`
+        );
+        if (res.lastSyncedAt) {
+          setLastSyncedAt(res.lastSyncedAt);
+        }
         setRefreshCounter((prev) => prev + 1);
       } else {
         setErrorMessage(res.error || "Failed to sync reviews from Google.");
@@ -262,7 +281,7 @@ export default function ReviewsPage() {
       setErrorMessage(msg);
     } finally {
       setIsSyncingReviews(false);
-      setTimeout(() => setSyncNotice(null), 5000);
+      setTimeout(() => setSyncNotice(null), 8000);
     }
   };
 
@@ -523,17 +542,24 @@ export default function ReviewsPage() {
           </Select>
 
           {/* Sync Reviews Button */}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleSyncReviews}
-            disabled={isSyncingReviews || !activeWorkspaceId}
-            className="h-9 px-3 text-xs bg-white border-slate-200 text-slate-700 hover:bg-slate-50 shadow-sm shrink-0"
-            title="Sync latest reviews from Google Business Profile"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${isSyncingReviews ? "animate-spin text-blue-600" : "text-slate-500"}`} />
-            {isSyncingReviews ? "Syncing..." : "Sync Reviews"}
-          </Button>
+          <div className="flex items-center gap-2 shrink-0">
+            {lastSyncedAt && (
+              <span className="text-[11px] text-slate-500 hidden md:inline-block">
+                Last synced: {new Date(lastSyncedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+              </span>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleSyncReviews}
+              disabled={isSyncingReviews || !activeWorkspaceId}
+              className="h-9 px-3 text-xs bg-white border-slate-200 text-slate-700 hover:bg-slate-50 shadow-sm shrink-0"
+              title="Sync latest reviews from Google Business Profile"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${isSyncingReviews ? "animate-spin text-blue-600" : "text-slate-500"}`} />
+              {isSyncingReviews ? "Syncing..." : "Sync Reviews"}
+            </Button>
+          </div>
         </div>
       </div>
 

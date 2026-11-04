@@ -41,7 +41,12 @@ export interface SyncLocationsResult {
   success: boolean
   locationsCount: number
   reviewsCount: number
+  newReviewsCount?: number
+  updatedReviewsCount?: number
+  skippedReviewsCount?: number
+  unansweredCount?: number
   negativeReviewsCount?: number
+  lastSyncedAt?: string
   message: string
   reviewsMessage?: string
   error?: string
@@ -312,7 +317,8 @@ export async function disconnectGoogleProfileAction(
  * Does NOT import, activate, or process other Google Business Profiles under the same Google account.
  */
 export async function syncActiveLocationAction(
-  workspaceId: string
+  workspaceId: string,
+  options: { skipAutoReply?: boolean } = { skipAutoReply: true }
 ): Promise<SyncLocationsResult> {
   if (!workspaceId) {
     return {
@@ -344,8 +350,10 @@ export async function syncActiveLocationAction(
     }
 
     // Delegate review synchronization to the centralized google-review-sync engine
+    // Never auto-publish/generate AI replies during diagnostic/manual sync by default
     const syncRes = await syncWorkspaceGoogleReviews(supabase, workspaceId, {
       userId: user?.id || null,
+      skipAutoReply: options.skipAutoReply ?? true,
     })
 
     revalidatePath('/dashboard/locations')
@@ -366,10 +374,15 @@ export async function syncActiveLocationAction(
       success: true,
       locationsCount: 1,
       reviewsCount: syncRes.totalFetched,
+      newReviewsCount: syncRes.newReviewsCount,
+      updatedReviewsCount: syncRes.updatedReviewsCount,
+      skippedReviewsCount: syncRes.skippedReviewsCount,
+      unansweredCount: syncRes.unansweredCount,
       negativeReviewsCount: syncRes.negativeReviewsCount,
+      lastSyncedAt: syncRes.lastSyncedAt,
       message: syncRes.negativeReviewsCount > 0
-        ? `Successfully synced ${syncRes.totalFetched} reviews (${syncRes.negativeReviewsCount} negative review${syncRes.negativeReviewsCount === 1 ? '' : 's'} flagged for attention in in-app alerts).`
-        : syncRes.message,
+        ? `Successfully synced ${syncRes.totalFetched} reviews (${syncRes.newReviewsCount} new, ${syncRes.updatedReviewsCount} updated, ${syncRes.skippedReviewsCount} unchanged, ${syncRes.negativeReviewsCount} negative review${syncRes.negativeReviewsCount === 1 ? '' : 's'} flagged for attention in in-app alerts).`
+        : `Successfully synced ${syncRes.totalFetched} reviews (${syncRes.newReviewsCount} new, ${syncRes.updatedReviewsCount} updated, ${syncRes.skippedReviewsCount} unchanged).`,
       reviewsMessage: syncRes.message,
     }
   } catch (err: unknown) {
@@ -397,7 +410,8 @@ export async function syncActiveLocationAction(
  * Backward compatibility alias: syncGoogleLocationsAction delegates to syncActiveLocationAction.
  */
 export async function syncGoogleLocationsAction(
-  workspaceId: string
+  workspaceId: string,
+  options: { skipAutoReply?: boolean } = { skipAutoReply: true }
 ): Promise<SyncLocationsResult> {
-  return syncActiveLocationAction(workspaceId)
+  return syncActiveLocationAction(workspaceId, options)
 }
