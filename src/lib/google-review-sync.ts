@@ -2,6 +2,7 @@ import { TypedSupabaseClient } from './reply-safety'
 import {
   getValidGoogleAccessToken,
   fetchGoogleReviews,
+  GoogleApiError,
 } from './google-business'
 import { autoProcessSingleReview } from './reply-automation'
 
@@ -19,6 +20,7 @@ export interface SyncWorkspaceReviewsResult {
   lastSyncedAt: string
   message: string
   error?: string
+  errorCode?: string
 }
 
 export interface BatchSyncReviewsResult {
@@ -111,6 +113,7 @@ export async function syncWorkspaceGoogleReviews(
       skippedReviewsCount: 0,
       lastSyncedAt: nowIso,
       message: 'Synchronization skipped: No business profile is connected for this workspace.',
+      errorCode: 'NOT_CONNECTED',
     }
   }
 
@@ -127,6 +130,7 @@ export async function syncWorkspaceGoogleReviews(
       lastSyncedAt: nowIso,
       message: 'Automation stopped: Ambiguous profile selection (multiple profiles active). Exactly one profile must be selected.',
       error: 'Ambiguous profile selection. Exactly one profile must be selected.',
+      errorCode: 'AMBIGUOUS_PROFILE',
     }
   }
 
@@ -147,6 +151,7 @@ export async function syncWorkspaceGoogleReviews(
       lastSyncedAt: nowIso,
       message: 'Connected business profile is missing Google Location or Account ID mapping.',
       error: 'Invalid Google location mapping. Please reconnect your business profile.',
+      errorCode: 'INVALID_MAPPING',
     }
   }
 
@@ -157,6 +162,7 @@ export async function syncWorkspaceGoogleReviews(
     accessToken = tokenResult.accessToken
   } catch (tokenErr: unknown) {
     const errorMsg = tokenErr instanceof Error ? tokenErr.message : 'Google authentication failure'
+    const errorCode = tokenErr instanceof GoogleApiError ? tokenErr.status : 'SERVER_ERROR'
     return {
       success: false,
       workspaceId,
@@ -171,6 +177,7 @@ export async function syncWorkspaceGoogleReviews(
       lastSyncedAt: nowIso,
       message: errorMsg,
       error: errorMsg,
+      errorCode,
     }
   }
 
@@ -197,6 +204,7 @@ export async function syncWorkspaceGoogleReviews(
       lastSyncedAt: nowIso,
       message: reviewsResult.message || 'Google Business Profile Reviews API access pending or unavailable.',
       error: reviewsResult.message || 'Google Business Profile Reviews API error.',
+      errorCode: reviewsResult.errorCode || 'UNKNOWN',
     }
   }
 

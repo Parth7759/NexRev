@@ -78,6 +78,7 @@ export interface SyncLocationsResult {
   message: string
   reviewsMessage?: string
   error?: string
+  errorCode?: string
 }
 
 /**
@@ -513,6 +514,7 @@ export async function syncActiveLocationAction(
         reviewsCount: 0,
         message: '',
         error: syncRes.error || syncRes.message,
+        errorCode: syncRes.errorCode,
       }
     }
 
@@ -539,6 +541,7 @@ export async function syncActiveLocationAction(
         reviewsCount: 0,
         message: '',
         error: err.message,
+        errorCode: err.status,
       }
     }
     const msg = err instanceof Error ? err.message : 'Unexpected error during synchronization.'
@@ -548,6 +551,7 @@ export async function syncActiveLocationAction(
       reviewsCount: 0,
       message: '',
       error: msg,
+      errorCode: 'SERVER_ERROR',
     }
   }
 }

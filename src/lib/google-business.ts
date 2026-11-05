@@ -37,6 +37,7 @@ export interface GoogleReviewsResult {
   supported: boolean
   reviews: GoogleReviewData[]
   message?: string
+  errorCode?: 'INVALID_GRANT' | 'NETWORK_ERROR' | 'QUOTA_EXCEEDED' | 'PERMISSION_DENIED' | 'API_DISABLED' | 'SERVER_MISCONFIGURED' | 'UNKNOWN'
 }
 
 export class GoogleApiError extends Error {
@@ -147,12 +148,26 @@ export async function getValidGoogleAccessToken(
           'INVALID_GRANT'
         )
       }
-      throw new GoogleApiError(`Google token refresh failed: ${errorMsg}`, refreshRes.status)
+      if (refreshRes.status === 429) {
+        throw new GoogleApiError(
+          'Google OAuth token refresh rate limit reached. Please wait a few minutes before syncing again.',
+          429,
+          'QUOTA_EXCEEDED'
+        )
+      }
+      if (tokenData.error === 'invalid_client') {
+        throw new GoogleApiError(
+          'Google OAuth client configuration rejected by Google. Please check server client credentials.',
+          401,
+          'SERVER_MISCONFIGURED'
+        )
+      }
+      throw new GoogleApiError(`Google token refresh failed: ${errorMsg}`, refreshRes.status, 'REFRESH_FAILED')
     }
   } catch (err: unknown) {
     if (err instanceof GoogleApiError) throw err
     const msg = err instanceof Error ? err.message : 'Network error during Google token refresh'
-    throw new GoogleApiError(`Failed to connect to Google OAuth server: ${msg}`)
+    throw new GoogleApiError(`Failed to connect to Google OAuth server: ${msg}`, 503, 'NETWORK_ERROR')
   }
 
   // Encrypt the new access token and update database
@@ -448,11 +463,33 @@ export async function fetchGoogleReviews(
         const err = body?.error
         const message = err?.message || res.statusText || 'Reviews API error'
 
-        if (res.status === 403 || res.status === 404) {
+        if (res.status === 401) {
           return {
             supported: false,
             reviews,
-            message: `Reviews API access pending (${err?.status || res.status}): ${message}. To enable live reviews sync, ensure 'Google My Business API' is enabled on project 248443327820.`,
+            message: 'Google authorization expired during reviews fetch. Please reconnect your account.',
+            errorCode: 'INVALID_GRANT',
+          }
+        }
+
+        if (res.status === 429) {
+          return {
+            supported: false,
+            reviews,
+            message: 'Google Business Profile API rate limit exceeded. Please wait a few minutes before syncing again.',
+            errorCode: 'QUOTA_EXCEEDED',
+          }
+        }
+
+        if (res.status === 403 || res.status === 404) {
+          const isApiDisabled = message.includes('has not been used') || message.includes('disabled')
+          return {
+            supported: false,
+            reviews,
+            message: isApiDisabled
+              ? `Google My Business API is not enabled on Google Cloud project 248443327820. Please enable it in the Google Cloud Console.`
+              : `Google Business Profile permission error: Access was denied (${message}). Ensure your account has manager or owner access to this location.`,
+            errorCode: isApiDisabled ? 'API_DISABLED' : 'PERMISSION_DENIED',
           }
         }
 
@@ -460,6 +497,7 @@ export async function fetchGoogleReviews(
           supported: false,
           reviews,
           message: `Reviews fetch returned status ${res.status}: ${message}`,
+          errorCode: 'UNKNOWN',
         }
       }
 
@@ -500,7 +538,8 @@ export async function fetchGoogleReviews(
     return {
       supported: false,
       reviews: [],
-      message: `Review synchronization skipped: ${msg}`,
+      message: `Failed to connect to Google Reviews API: ${msg}. Please check your network connection and try again.`,
+      errorCode: 'NETWORK_ERROR',
     }
   }
 }
@@ -510,6 +549,7 @@ export interface PublishReplyResult {
   comment?: string
   updateTime?: string
   error?: string
+  errorCode?: string
 }
 
 /**
@@ -570,10 +610,19 @@ export async function publishGoogleReviewReply(
         const fresh = await getValidGoogleAccessToken(supabase, workspaceId)
         accessToken = fresh.accessToken
         result = await attemptPublish(accessToken)
-      } catch {
+      } catch (refreshErr: unknown) {
+        if (refreshErr instanceof GoogleApiError && refreshErr.status === 'INVALID_GRANT') {
+          return {
+            success: false,
+            error: 'Google authorization has been revoked or expired. Please reconnect your Google Business Profile account.',
+            errorCode: 'INVALID_GRANT',
+          }
+        }
+        const refreshMsg = refreshErr instanceof Error ? refreshErr.message : 'Token refresh failed'
         return {
           success: false,
-          error: 'Google authorization expired and automatic token renewal failed. Please reconnect your account.',
+          error: `Google review reply failed: ${refreshMsg}`,
+          errorCode: refreshErr instanceof GoogleApiError ? refreshErr.status : 'SERVER_ERROR',
         }
       }
     }
