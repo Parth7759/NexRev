@@ -21,34 +21,23 @@ import {
   LogOut,
   SlidersHorizontal,
 } from "lucide-react";
-import { createClient } from "@/utils/supabase/client";
 import { useWorkspace } from "@/contexts/workspace-context";
 import { useLocation } from "@/contexts/location-context";
 import {
+  getLocationPageDataAction,
   getAvailableGoogleProfilesAction,
   selectSingleGoogleProfileAction,
   disconnectGoogleProfileAction,
   syncActiveLocationAction,
   GoogleLocationProfile,
   SyncLocationsResult,
+  LocationPageRecord,
 } from "./actions";
 
 interface GoogleIntegrationState {
   isConnected: boolean;
   accountName?: string | null;
   updatedAt?: string | null;
-}
-
-interface LocationRecord {
-  id: string;
-  name: string;
-  address: string | null;
-  phone: string | null;
-  google_place_id: string | null;
-  google_location_id: string | null;
-  google_account_id: string | null;
-  is_connected: boolean;
-  updated_at: string;
 }
 
 function LocationsContent() {
@@ -67,8 +56,9 @@ function LocationsContent() {
   const { refreshLocations: refreshLocationContext } = useLocation();
 
   const [integration, setIntegration] = useState<GoogleIntegrationState>({ isConnected: false });
-  const [activeLocation, setActiveLocation] = useState<LocationRecord | null>(null);
+  const [activeLocation, setActiveLocation] = useState<LocationPageRecord | null>(null);
   const [isLoadingData, setIsLoadingData] = useState(true);
+  const [isConnecting, setIsConnecting] = useState(false);
 
   // Profile Selector Modal / View State
   const [isSelectingProfile, setIsSelectingProfile] = useState(initialSelectParam);
@@ -87,46 +77,46 @@ function LocationsContent() {
   const [actionErrorNotice, setActionErrorNotice] = useState<string | null>(null);
   const [syncResult, setSyncResult] = useState<SyncLocationsResult | null>(null);
 
-  // Load integration and active location from database
+  // Load integration and active location from database via secure Server Action
   const loadData = useCallback(async () => {
-    if (!activeWorkspaceId) return;
-    try {
-      const supabase = createClient();
-      const [googleRes, locationsRes] = await Promise.all([
-        supabase
-          .from("google_integrations")
-          .select("account_name, updated_at")
-          .eq("workspace_id", activeWorkspaceId)
-          .maybeSingle(),
-        supabase
-          .from("locations")
-          .select("*")
-          .eq("workspace_id", activeWorkspaceId)
-          .eq("is_connected", true),
-      ]);
+    if (!activeWorkspaceId) {
+      setIsLoadingData(false);
+      setIntegration({ isConnected: false });
+      setActiveLocation(null);
+      return;
+    }
 
-      if (googleRes.data) {
-        setIntegration({
-          isConnected: true,
-          accountName: googleRes.data.account_name,
-          updatedAt: googleRes.data.updated_at,
-        });
-      } else {
+    setIsLoadingData(true);
+
+    try {
+      const res = await getLocationPageDataAction(activeWorkspaceId);
+      if (!res.success) {
+        setActionErrorNotice(res.error || "Failed to load location data.");
         setIntegration({ isConnected: false });
+        setActiveLocation(null);
+        return;
       }
 
-      const connectedLocs = (locationsRes.data || []) as LocationRecord[];
-      if (connectedLocs.length === 1) {
-        setActiveLocation(connectedLocs[0]);
+      setIntegration({
+        isConnected: res.integration.isConnected,
+        accountName: res.integration.accountName,
+        updatedAt: res.integration.updatedAt,
+      });
+
+      if (res.activeLocation) {
+        setActiveLocation(res.activeLocation);
       } else {
         // Zero or multiple connected: require explicit selection. No default profile.
         setActiveLocation(null);
-        if (googleRes.data) {
+        if (res.integration.isConnected && res.connectedLocationsCount !== 1) {
           setIsSelectingProfile(true);
         }
       }
-    } catch (err) {
-      console.error("Failed to load locations or integration:", err);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to load locations";
+      setActionErrorNotice(msg);
+      setIntegration({ isConnected: false });
+      setActiveLocation(null);
     } finally {
       setIsLoadingData(false);
     }
@@ -183,7 +173,12 @@ function LocationsContent() {
 
   // Connect Google OAuth start
   const handleConnectGoogle = () => {
-    if (!activeWorkspaceId) return;
+    if (!activeWorkspaceId) {
+      setActionErrorNotice("Please select or create an active workspace before connecting Google Business Profile.");
+      return;
+    }
+    setIsConnecting(true);
+    setActionErrorNotice(null);
     const startUrl = `/api/auth/google/start?workspaceId=${encodeURIComponent(activeWorkspaceId)}`;
     window.location.assign(new URL(startUrl, window.location.origin).toString());
   };
@@ -312,22 +307,42 @@ function LocationsContent() {
       {googleSuccess && (
         <div className="bg-green-50 border border-green-200 text-green-800 p-4 rounded-xl flex items-start text-sm shadow-sm">
           <CheckCircle2 className="w-5 h-5 mr-3 shrink-0 mt-0.5 text-green-600" />
-          <div>
+          <div className="flex-1">
             <strong>Google Business Profile Notice</strong>
             <p className="mt-0.5 text-green-700">
               {googleSuccess === "1" ? "Google OAuth authorization completed successfully." : googleSuccess}
             </p>
           </div>
+          <button
+            onClick={() => {
+              const url = new URL(window.location.href);
+              url.searchParams.delete("google_success");
+              router.replace(url.pathname + (url.search ? url.search : ""));
+            }}
+            className="text-green-600 hover:text-green-800 p-1"
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
       )}
 
       {googleError && (
         <div className="bg-red-50 border border-red-200 text-red-800 p-4 rounded-xl flex items-start text-sm shadow-sm">
           <AlertCircle className="w-5 h-5 mr-3 shrink-0 mt-0.5 text-red-600" />
-          <div>
+          <div className="flex-1">
             <strong>Google OAuth Notice</strong>
             <p className="mt-0.5 text-red-700">{googleError}</p>
           </div>
+          <button
+            onClick={() => {
+              const url = new URL(window.location.href);
+              url.searchParams.delete("google_error");
+              router.replace(url.pathname + (url.search ? url.search : ""));
+            }}
+            className="text-red-600 hover:text-red-800 p-1"
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
       )}
 
@@ -831,10 +846,18 @@ function LocationsContent() {
               <div className="mt-6">
                 <Button
                   onClick={handleConnectGoogle}
-                  disabled={isLoadingData || isWorkspaceLoading || !activeWorkspaceId}
+                  disabled={isLoadingData || isWorkspaceLoading || isConnecting || !activeWorkspaceId}
                   className="bg-slate-900 hover:bg-slate-800 text-white shadow-xs font-medium h-10 px-5"
                 >
-                  <Plus className="mr-2 h-4 w-4" /> Connect Google Business Profile
+                  {isConnecting ? (
+                    <>
+                      <RefreshCw className="mr-2 h-4 w-4 animate-spin" /> Redirecting to Google...
+                    </>
+                  ) : (
+                    <>
+                      <Plus className="mr-2 h-4 w-4" /> Connect Google Business Profile
+                    </>
+                  )}
                 </Button>
               </div>
             </div>

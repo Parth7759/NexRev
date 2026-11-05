@@ -112,9 +112,18 @@ export async function GET(request: NextRequest) {
   }
 
   // Determine redirect URI (server-side only)
-  const redirectUri = (
-    process.env.GOOGLE_REDIRECT_URI || `${origin}/api/auth/google/callback`
-  ).trim()
+  // Prefer explicitly configured GOOGLE_REDIRECT_URI.
+  // In development, default to http://localhost:3001/api/auth/google/callback if running locally.
+  let redirectUri = process.env.GOOGLE_REDIRECT_URI?.trim()
+
+  if (!redirectUri) {
+    if (host.startsWith('localhost') || host.startsWith('127.0.0.1')) {
+      const port = host.split(':')[1] || '3001'
+      redirectUri = `http://localhost:${port}/api/auth/google/callback`
+    } else {
+      redirectUri = `${origin}/api/auth/google/callback`
+    }
+  }
 
   // 5. Generate cryptographically random state to prevent CSRF
   const stateToken = crypto.randomBytes(32).toString('hex')
@@ -122,6 +131,7 @@ export async function GET(request: NextRequest) {
     state: stateToken,
     workspaceId,
     userId: user.id,
+    redirectUri,
     createdAt: Date.now(),
   }
 

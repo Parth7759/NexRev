@@ -37,7 +37,10 @@ export async function GET(request: NextRequest) {
 
   // 1. Handle error directly returned from Google
   if (error || errorDescription) {
-    const errorMsg = errorDescription || error || 'Google OAuth authentication was denied or cancelled.'
+    let errorMsg = errorDescription || error || 'Google OAuth authentication was denied or cancelled.'
+    if (error === 'redirect_uri_mismatch' || errorDescription?.includes('redirect_uri_mismatch')) {
+      errorMsg = 'Google OAuth Redirect URI Mismatch: The callback URL is not authorized in Google Cloud Console. Please ensure your current domain callback is registered in Google Cloud Console Authorized redirect URIs.'
+    }
     return createRedirect('/dashboard/locations', { key: 'google_error', value: errorMsg })
   }
 
@@ -46,11 +49,11 @@ export async function GET(request: NextRequest) {
   if (!stateCookie) {
     return createRedirect('/dashboard/locations', {
       key: 'google_error',
-      value: 'OAuth session expired or missing state verification. Please initiate connection again.',
+      value: 'OAuth session expired or missing state verification. Please click Connect again from your active dashboard window.',
     })
   }
 
-  let stateData: { state: string; workspaceId: string; userId: string }
+  let stateData: { state: string; workspaceId: string; userId: string; redirectUri?: string }
   try {
     stateData = JSON.parse(stateCookie)
   } catch {
@@ -99,8 +102,10 @@ export async function GET(request: NextRequest) {
   // 4. Server-side token exchange
   const clientId = process.env.GOOGLE_CLIENT_ID
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET
-  const redirectUri = (
-    process.env.GOOGLE_REDIRECT_URI || `${origin}/api/auth/google/callback`
+  const tokenRedirectUri = (
+    stateData.redirectUri ||
+    process.env.GOOGLE_REDIRECT_URI ||
+    `${origin}/api/auth/google/callback`
   ).trim()
 
   if (!clientId || !clientSecret) {
@@ -128,7 +133,7 @@ export async function GET(request: NextRequest) {
         code,
         client_id: clientId.trim(),
         client_secret: clientSecret.trim(),
-        redirect_uri: redirectUri,
+        redirect_uri: tokenRedirectUri,
         grant_type: 'authorization_code',
       }).toString(),
     })

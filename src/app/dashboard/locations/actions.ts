@@ -11,6 +11,34 @@ import {
 } from '@/lib/google-business'
 import { syncWorkspaceGoogleReviews } from '@/lib/google-review-sync'
 
+export interface LocationPageRecord {
+  id: string
+  name: string
+  address: string | null
+  phone: string | null
+  google_location_id: string | null
+  google_account_id: string | null
+  google_place_id: string | null
+  is_connected: boolean
+  updated_at?: string | null
+}
+
+export interface LocationPageDataResult {
+  success: boolean
+  workspaceId: string
+  integration: {
+    isConnected: boolean
+    accountName: string | null
+    accountId: string | null
+    updatedAt: string | null
+    isTokenExpired: boolean
+    hasRefreshToken: boolean
+  }
+  activeLocation: LocationPageRecord | null
+  connectedLocationsCount: number
+  error?: string
+}
+
 export interface GoogleLocationProfile {
   googleLocationId: string
   name: string
@@ -50,6 +78,124 @@ export interface SyncLocationsResult {
   message: string
   reviewsMessage?: string
   error?: string
+}
+
+/**
+ * 0. Fetches Google integration status and connected location records securely on the server.
+ * Replaces brittle client-side browser database queries with server-side authentication.
+ * Pure database inspection — DOES NOT call external Google OAuth refresh endpoints to render the page.
+ */
+export async function getLocationPageDataAction(
+  workspaceId: string
+): Promise<LocationPageDataResult> {
+  const emptyIntegration = {
+    isConnected: false,
+    accountName: null,
+    accountId: null,
+    updatedAt: null,
+    isTokenExpired: false,
+    hasRefreshToken: false,
+  }
+
+  if (!workspaceId) {
+    return {
+      success: false,
+      workspaceId: '',
+      integration: emptyIntegration,
+      activeLocation: null,
+      connectedLocationsCount: 0,
+      error: 'Workspace ID is required.',
+    }
+  }
+
+  try {
+    const supabase = await createClient()
+
+    // 1. Verify user authentication and membership
+    const membershipCheck = await verifyWorkspaceMembership(supabase, workspaceId)
+    if (!membershipCheck.isMember) {
+      return {
+        success: false,
+        workspaceId,
+        integration: emptyIntegration,
+        activeLocation: null,
+        connectedLocationsCount: 0,
+        error: membershipCheck.error || 'You do not have access to this workspace.',
+      }
+    }
+
+    // 2. Query google_integrations and locations in parallel
+    const [integrationRes, locationsRes] = await Promise.all([
+      supabase
+        .from('google_integrations')
+        .select('account_name, account_id, expires_at, refresh_token_encrypted, access_token_encrypted, updated_at')
+        .eq('workspace_id', workspaceId)
+        .maybeSingle(),
+      supabase
+        .from('locations')
+        .select('id, name, address, phone, google_location_id, google_account_id, google_place_id, is_connected, updated_at')
+        .eq('workspace_id', workspaceId)
+        .eq('is_connected', true),
+    ])
+
+    if (integrationRes.error) {
+      return {
+        success: false,
+        workspaceId,
+        integration: emptyIntegration,
+        activeLocation: null,
+        connectedLocationsCount: 0,
+        error: `Database error checking Google integration: ${integrationRes.error.message}`,
+      }
+    }
+
+    if (locationsRes.error) {
+      return {
+        success: false,
+        workspaceId,
+        integration: emptyIntegration,
+        activeLocation: null,
+        connectedLocationsCount: 0,
+        error: `Database error loading locations: ${locationsRes.error.message}`,
+      }
+    }
+
+    const intData = integrationRes.data
+    const isConnected = Boolean(intData)
+
+    let isTokenExpired = false
+    if (intData?.expires_at) {
+      isTokenExpired = new Date(intData.expires_at).getTime() <= Date.now()
+    }
+
+    const connectedLocations = (locationsRes.data || []) as LocationPageRecord[]
+    const activeLocation = connectedLocations.length === 1 ? connectedLocations[0] : null
+
+    return {
+      success: true,
+      workspaceId,
+      integration: {
+        isConnected,
+        accountName: intData?.account_name || null,
+        accountId: intData?.account_id || null,
+        updatedAt: intData?.updated_at || null,
+        isTokenExpired,
+        hasRefreshToken: Boolean(intData?.refresh_token_encrypted),
+      },
+      activeLocation,
+      connectedLocationsCount: connectedLocations.length,
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Failed to fetch location data.'
+    return {
+      success: false,
+      workspaceId,
+      integration: emptyIntegration,
+      activeLocation: null,
+      connectedLocationsCount: 0,
+      error: msg,
+    }
+  }
 }
 
 /**
