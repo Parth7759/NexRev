@@ -72,8 +72,20 @@ export default function LandingPage() {
         </section>
       </main>
 
-      <footer className="bg-slate-900 text-slate-400 py-12 text-center border-t border-slate-800">
-        <p>© 2026 NexFlowOps. All rights reserved.</p>
+      <footer className="bg-slate-900 text-slate-400 py-12 border-t border-slate-800">
+        <div className="max-w-6xl mx-auto px-6 lg:px-12 flex flex-col sm:flex-row items-center justify-between gap-6 text-sm">
+          <div className="flex items-center gap-3">
+            <Link href="/" className="inline-block">
+              <NexRepLogo variant="dark" showTagline={false} />
+            </Link>
+          </div>
+          <p>© 2026 NexFlowOps. All rights reserved.</p>
+          <div className="flex items-center gap-6 text-xs">
+            <Link href="/privacy-policy" className="hover:text-white transition-colors">
+              Privacy Policy
+            </Link>
+          </div>
+        </div>
       </footer>
     </div>
   );
