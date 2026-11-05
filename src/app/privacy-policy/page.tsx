@@ -1,6 +1,20 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { ArrowLeft, ArrowRight, ShieldCheck, Lock, ExternalLink, Mail, CheckCircle2, FileText, Database, Sparkles, RefreshCw } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  ShieldCheck,
+  Lock,
+  ExternalLink,
+  Mail,
+  CheckCircle2,
+  FileText,
+  Database,
+  Sparkles,
+  RefreshCw,
+  Download,
+  AlertTriangle,
+} from "lucide-react";
 import { NexRepLogo } from "@/components/brand/logo";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -21,18 +35,18 @@ export default function PrivacyPolicyPage() {
     { id: "introduction", label: "1. Introduction & Scope" },
     { id: "information-we-collect", label: "2. Information We Collect" },
     { id: "google-api-services", label: "3. Google API Services & Limited Use" },
-    { id: "ai-processing", label: "4. AI Processing & Third-Party Disclosures" },
+    { id: "ai-processing", label: "4. AI Processing & Third-Party LLM Disclosures" },
     { id: "how-we-use-information", label: "5. How We Use Information" },
     { id: "data-storage-and-security", label: "6. Data Storage & Security" },
     { id: "data-sharing", label: "7. Data Sharing & Service Providers" },
     { id: "data-retention", label: "8. Data Retention Policies" },
     { id: "google-disconnection", label: "9. Google Account Disconnection" },
-    { id: "user-rights", label: "10. User Rights & Data Deletion Requests" },
+    { id: "user-rights", label: "10. User Rights, Data Export & Deletion" },
     { id: "cookies", label: "11. Cookies & Authentication Sessions" },
     { id: "childrens-privacy", label: "12. Children's Privacy" },
     { id: "international-transfers", label: "13. International Data Transfers" },
     { id: "changes-to-policy", label: "14. Changes to This Privacy Policy" },
-    { id: "contact-information", label: "15. Contact Information" },
+    { id: "contact-information", label: "15. Contact Information & Developer Details" },
   ];
 
   return (
@@ -128,7 +142,7 @@ export default function PrivacyPolicyPage() {
                 Introduction & Scope
               </h2>
               <p>
-                NexRep (&ldquo;we&rdquo;, &ldquo;our&rdquo;, or &ldquo;us&rdquo;), operated by <strong>NexFlowOps</strong>, provides an AI-powered reputation management and customer review response platform accessible via <strong>https://nex-rev.vercel.app</strong> (the &ldquo;Service&rdquo;). NexRep is designed for business owners, agencies, and multi-location operators to monitor customer feedback, synchronize Google Business Profile reviews, and generate contextual, professional reply drafts.
+                NexRep (&ldquo;we&rdquo;, &ldquo;our&rdquo;, or &ldquo;us&rdquo;), operated by <strong>NexFlowOps</strong> and maintained by developer <strong>Parth Prajapati</strong>, provides an AI-assisted customer review management and response platform accessible via <strong>https://nex-rev.vercel.app</strong> (the &ldquo;Service&rdquo;). NexRep is designed for business owners, agency teams, and multi-location operators to monitor customer feedback, synchronize Google Business Profile reviews, and generate contextual, professional reply drafts.
               </p>
               <p>
                 This Privacy Policy explains how we collect, use, store, disclose, and protect personal and business information when you visit our website, register for an account, create or participate in team workspaces, or connect third-party platforms such as Google Business Profile.
@@ -264,32 +278,32 @@ export default function PrivacyPolicyPage() {
                   </a>
                   , including the Limited Use requirements.
                 </p>
-                <ul className="list-disc list-inside text-xs text-emerald-900 space-y-1 pl-1">
+                <ul className="list-disc list-inside text-xs text-emerald-900 space-y-1.5 pl-1">
                   <li><strong>No Data Sale:</strong> Google user data is NEVER sold, rented, leased, or disclosed to third-party data brokers.</li>
-                  <li><strong>No Advertising:</strong> Google user data is NEVER used for personalized, retargeted, or interest-based advertising.</li>
+                  <li><strong>No Advertising:</strong> Google user data is NEVER used for personalized, retargeted, or interest-based advertising, and is never provided to advertising exchanges or data aggregators.</li>
                   <li><strong>Purpose-Bound:</strong> Google API data is used solely to provide and improve the review management, sentiment analysis, and response drafting capabilities explicitly requested by you.</li>
-                  <li><strong>Human Inspection Limitations:</strong> NexRep staff and contractors do not view Google user data unless you provide explicit permission for customer support or as required for security and law enforcement.</li>
+                  <li><strong>Human Inspection Limitations:</strong> NexRep personnel do not read Google user data unless you provide explicit consent for customer support, as required to resolve security incidents, or to comply with applicable law.</li>
                 </ul>
               </div>
             </section>
 
-            {/* 4. AI Processing */}
+            {/* 4. AI Processing & Third-Party LLM Disclosures */}
             <section id="ai-processing" className="scroll-mt-28 space-y-4">
               <h2 className="text-2xl font-bold text-slate-900 tracking-tight flex items-center gap-2.5">
                 <span className="w-8 h-8 rounded-lg bg-indigo-100 text-indigo-800 flex items-center justify-center text-sm font-bold shrink-0">4</span>
                 AI Processing & Third-Party LLM Disclosures
               </h2>
               <p>
-                NexRep incorporates generative artificial intelligence to assist merchants with drafting review replies. Here is how customer review content is processed:
+                NexRep incorporates generative artificial intelligence to assist merchants with drafting review replies. Here is an exact disclosure of how customer review content is processed:
               </p>
               <div className="space-y-3 pl-2">
                 <div className="p-4 rounded-xl bg-white border border-slate-200 space-y-2">
                   <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
                     <Sparkles className="w-4 h-4 text-indigo-600 shrink-0" />
-                    How AI Generates Suggested Replies
+                    Data Sent to AI to Generate Suggested Replies
                   </h3>
-                  <p className="text-sm text-slate-600">
-                    When reply generation is requested, the customer review text, star rating, reviewer name, business name, and optional custom business context are submitted to an external Large Language Model (LLM) API via an encrypted payload. The model produces a suggested draft matching the requested tone.
+                  <p className="text-sm text-slate-600 leading-relaxed">
+                    When reply generation is initiated (either manually by clicking &ldquo;Generate AI Reply&rdquo; or automatically via an enabled automation rule), the customer review text, reviewer public display name, star rating (1 to 5), location name, and your user-provided business context notes are transmitted to an external Large Language Model API over an encrypted TLS connection.
                   </p>
                 </div>
 
@@ -299,8 +313,13 @@ export default function PrivacyPolicyPage() {
                     Third-Party AI Service Provider (OpenAI API)
                   </h3>
                   <p className="text-sm text-slate-600 leading-relaxed">
-                    NexRep utilizes the commercial <strong>OpenAI API</strong>. Per OpenAI&rsquo;s official API data usage policies, data transmitted via commercial API endpoints is <strong>not used by OpenAI to train or improve their models</strong>. OpenAI retains API data for up to 30 days strictly for abuse monitoring and legal compliance, after which it is deleted according to OpenAI&rsquo;s enterprise retention policies.
+                    NexRep utilizes OpenAI&rsquo;s standard commercial API platform (specifically model <code className="bg-slate-100 px-1 py-0.5 rounded font-mono text-xs">gpt-4o-mini</code>). In accordance with OpenAI&rsquo;s standard API data usage policies:
                   </p>
+                  <ul className="list-disc list-inside text-xs text-slate-600 space-y-1 pl-1">
+                    <li><strong>No Model Training:</strong> Data submitted via the commercial API is <strong>NOT used by OpenAI to train or improve models</strong>.</li>
+                    <li><strong>30-Day Retention for Abuse Monitoring:</strong> OpenAI retains API input and output payloads for up to <strong>30 days</strong> solely for trust, safety, and abuse monitoring purposes, after which it is deleted according to OpenAI&rsquo;s standard platform controls.</li>
+                    <li><strong>Standard Commercial API:</strong> NexRep operates under OpenAI&rsquo;s standard commercial API platform terms and does not claim custom zero-retention (ZDR) agreements or HIPAA exemptions.</li>
+                  </ul>
                 </div>
 
                 <div className="p-4 rounded-xl bg-white border border-slate-200 space-y-2">
@@ -347,7 +366,7 @@ export default function PrivacyPolicyPage() {
                     <Database className="w-4 h-4 text-blue-600" /> Managed Supabase Infrastructure
                   </h4>
                   <p className="text-xs text-slate-600">
-                    Data is stored in high-availability PostgreSQL databases hosted by Supabase, protected by continuous backups and strict network isolation.
+                    Data is stored in high-availability PostgreSQL databases hosted by Supabase, protected by automated daily backups and network isolation.
                   </p>
                 </div>
                 <div className="p-4 rounded-xl bg-white border border-slate-200">
@@ -355,7 +374,7 @@ export default function PrivacyPolicyPage() {
                     <ShieldCheck className="w-4 h-4 text-blue-600" /> Row-Level Security (RLS)
                   </h4>
                   <p className="text-xs text-slate-600">
-                    Strict database Row-Level Security policies guarantee tenant isolation. Workspace members cannot view or modify data belonging to other workspaces.
+                    Strict database Row-Level Security policies guarantee multi-tenant isolation. Workspace members cannot view or modify data belonging to other workspaces.
                   </p>
                 </div>
                 <div className="p-4 rounded-xl bg-white border border-slate-200">
@@ -374,6 +393,12 @@ export default function PrivacyPolicyPage() {
                     All web communications between your browser, our servers, and third-party APIs are encrypted with industry-standard TLS 1.3 encryption.
                   </p>
                 </div>
+              </div>
+              <div className="p-4 rounded-xl bg-slate-100 border border-slate-200 text-xs text-slate-600 flex items-start gap-2.5">
+                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <p>
+                  While we implement rigorous technical safeguards adhering to recognized industry best practices, no method of transmission over the internet or method of electronic storage is 100% impenetrable; therefore, we cannot guarantee absolute security.
+                </p>
               </div>
             </section>
 
@@ -425,7 +450,7 @@ export default function PrivacyPolicyPage() {
                 </div>
               </div>
               <p className="text-xs text-slate-500">
-                We may also disclose information if required to do so by applicable law, regulation, legal process, or governmental request.
+                We may also disclose information if required to do so by applicable law, regulation, valid legal subpoena, or governmental request.
               </p>
             </section>
 
@@ -436,12 +461,24 @@ export default function PrivacyPolicyPage() {
                 Data Retention Policies
               </h2>
               <p>
-                We retain your information only as long as necessary to fulfill the purposes outlined in this Privacy Policy:
+                We retain your information only as long as necessary to fulfill the operational purposes described in this Privacy Policy:
               </p>
               <ul className="list-disc list-inside space-y-2 pl-2 text-sm">
-                <li><strong>Active Workspaces:</strong> Reviews, locations, and drafts are retained for as long as your workspace remains active.</li>
-                <li><strong>Disconnected Locations:</strong> If you disconnect a Google Business Profile location, stored OAuth tokens are immediately purged or marked inactive.</li>
-                <li><strong>Account Deletion:</strong> Upon receiving a verified account or workspace deletion request, all associated personal data and integration records are purged from our primary database within 30 days.</li>
+                <li>
+                  <strong>Active Workspaces:</strong> Reviews, ratings, locations, and drafts are retained for as long as your workspace remains active.
+                </li>
+                <li>
+                  <strong>Disconnected Locations:</strong> When you disconnect a Google Business Profile location in NexRep, the location is marked disconnected (<code className="bg-slate-100 px-1 py-0.5 rounded font-mono text-xs">is_connected = false</code>). Synchronization and automated replies immediately cease for that location. Previously synchronized historical reviews remain stored in your workspace. Stored OAuth credentials remain associated with your workspace to allow reconnection unless access is revoked via Google Account Security or deleted upon support request.
+                </li>
+                <li>
+                  <strong>Account & Workspace Deletion:</strong> Upon receiving a verified account or workspace deletion request, all associated personal profiles, workspace records, locations, reviews, and OAuth integration records are permanently purged from our active primary database within 30 days.
+                </li>
+                <li>
+                  <strong>Database Backups vs. Primary Database:</strong> Residual copies may temporarily persist in automated, encrypted database backups for up to 30 additional days before being routinely overwritten by standard backup rotation cycles.
+                </li>
+                <li>
+                  <strong>Third-Party Logs:</strong> Log records maintained by third-party infrastructure providers (Vercel, Supabase, Google Cloud, OpenAI) are retained according to their own standard system retention schedules.
+                </li>
               </ul>
             </section>
 
@@ -452,7 +489,7 @@ export default function PrivacyPolicyPage() {
                 Google Account Disconnection & Access Revocation
               </h2>
               <p>
-                You retain full control over your Google Business Profile connection. You can disconnect or revoke NexRep&rsquo;s access at any time through either of the following methods:
+                You retain full control over your Google Business Profile connection. You can disconnect or revoke NexRep&rsquo;s access at any time through any of the following methods:
               </p>
               <div className="grid sm:grid-cols-2 gap-4 pt-1">
                 <div className="p-4 rounded-xl bg-white border border-slate-200 space-y-2">
@@ -461,7 +498,7 @@ export default function PrivacyPolicyPage() {
                     Within the NexRep Dashboard
                   </h4>
                   <p className="text-xs text-slate-600 leading-relaxed">
-                    Navigate to <strong>Dashboard &gt; Locations</strong>, click <em>&ldquo;Disconnect Business Profile&rdquo;</em>, and confirm. This immediately disconnects the profile, stops review synchronization, and pauses automated replies.
+                    Navigate to <strong>Dashboard &gt; Locations</strong> and click <em>&ldquo;Disconnect Profile&rdquo;</em>. This immediately marks the profile disconnected (<code className="bg-slate-100 px-1 py-0.5 rounded font-mono text-[11px]">is_connected = false</code>), stops review synchronization, and pauses automated replies.
                   </p>
                 </div>
                 <div className="p-4 rounded-xl bg-white border border-slate-200 space-y-2">
@@ -479,36 +516,52 @@ export default function PrivacyPolicyPage() {
                     >
                       myaccount.google.com/permissions <ExternalLink className="w-3 h-3 inline" />
                     </a>
-                    .
+                    . This immediately invalidates the OAuth token on Google&rsquo;s authorization servers.
                   </p>
                 </div>
               </div>
             </section>
 
-            {/* 10. User Rights and Data Deletion Requests */}
+            {/* 10. User Rights, Data Export and Deletion Requests */}
             <section id="user-rights" className="scroll-mt-28 space-y-4">
               <h2 className="text-2xl font-bold text-slate-900 tracking-tight flex items-center gap-2.5">
                 <span className="w-8 h-8 rounded-lg bg-blue-100 text-blue-700 flex items-center justify-center text-sm font-bold shrink-0">10</span>
-                User Rights & Data Deletion Requests
+                User Rights, Data Export & Deletion Requests
               </h2>
               <p>
-                Depending on your location and applicable privacy laws (such as GDPR, CCPA/CPRA, and Google API Policies), you have the right to:
+                Depending on your jurisdiction and applicable data protection regulations (such as GDPR, CCPA/CPRA, and Google API Policies), you have the following rights:
               </p>
               <ul className="list-disc list-inside space-y-1.5 pl-2 text-sm">
                 <li>Access the personal information we hold about you.</li>
                 <li>Correct inaccurate or incomplete profile or business details.</li>
-                <li>Request the deletion of your personal data and workspace history.</li>
+                <li>Request deletion of your personal data and workspace history.</li>
                 <li>Withdraw consent for Google OAuth integration at any time.</li>
-                <li>Export your customer review and reply data in a structured, portable format.</li>
+                <li>Export your customer reviews and ratings in a structured, portable format.</li>
               </ul>
-              <div className="p-5 rounded-2xl bg-slate-100/80 border border-slate-200 space-y-2">
-                <h4 className="font-bold text-slate-900 text-sm">How to Request Data Deletion</h4>
+
+              {/* Data Export Box */}
+              <div className="p-5 rounded-2xl bg-white border border-slate-200 space-y-2">
+                <h4 className="font-bold text-slate-900 text-sm flex items-center gap-2">
+                  <Download className="w-4 h-4 text-blue-600" /> In-App Review Dataset Export (CSV)
+                </h4>
                 <p className="text-xs text-slate-600 leading-relaxed">
-                  To request the complete deletion of your account, workspace, or synchronized Google Business Profile records, please email our support desk at{" "}
-                  <a href="mailto:support@nexrep.app" className="text-blue-600 hover:underline font-bold">
-                    support@nexrep.app
+                  You can download your complete customer review datasets (including Review ID, Author Name, Star Rating, Review Date, Status, Sentiment, and Content) directly from the platform by clicking the <strong>&ldquo;Export CSV&rdquo;</strong> button on the <strong>Analytics</strong> (<code className="bg-slate-100 px-1 py-0.5 rounded font-mono text-xs">/dashboard/analytics</code>) or <strong>Reports</strong> (<code className="bg-slate-100 px-1 py-0.5 rounded font-mono text-xs">/dashboard/reports</code>) pages. For full workspace metadata exports beyond reviews, please contact our support desk.
+                </p>
+              </div>
+
+              {/* Data Deletion Box */}
+              <div className="p-5 rounded-2xl bg-slate-100/80 border border-slate-200 space-y-2">
+                <h4 className="font-bold text-slate-900 text-sm">How to Request Account & Data Deletion</h4>
+                <p className="text-xs text-slate-600 leading-relaxed">
+                  Because NexRep does not currently provide an automated self-serve account deletion button in the dashboard, users and workspace owners may request complete deletion of their account, workspace, and synchronized Google Business Profile records by emailing our verified support desk at{" "}
+                  <a href="mailto:parthprajapati7759@gmail.com" className="text-blue-600 hover:underline font-bold">
+                    parthprajapati7759@gmail.com
                   </a>{" "}
-                  with the subject line <em>&ldquo;Data Deletion Request&rdquo;</em> from your registered account email. Verified deletion requests are executed within 30 calendar days.
+                  or{" "}
+                  <a href="mailto:matrojatech@gmail.com" className="text-blue-600 hover:underline font-bold">
+                    matrojatech@gmail.com
+                  </a>{" "}
+                  with the subject line <em>&ldquo;NexRep Data Deletion Request&rdquo;</em> from your registered account email. Verified deletion requests are executed in our primary database within 30 calendar days.
                 </p>
               </div>
             </section>
@@ -538,7 +591,11 @@ export default function PrivacyPolicyPage() {
                 Children&rsquo;s Privacy
               </h2>
               <p>
-                NexRep is a business-to-business reputation management platform and is not directed to individuals under 18 years of age. We do not knowingly collect personal data from children. If you become aware that a child has provided us with personal information, please contact us immediately at <a href="mailto:support@nexrep.app" className="text-blue-600 hover:underline">support@nexrep.app</a> so we can delete such records.
+                NexRep is a business-to-business reputation management platform and is not directed to individuals under 18 years of age. We do not knowingly collect personal data from children. If you become aware that a child has provided us with personal information, please contact us immediately at{" "}
+                <a href="mailto:parthprajapati7759@gmail.com" className="text-blue-600 hover:underline">
+                  parthprajapati7759@gmail.com
+                </a>{" "}
+                so we can delete such records.
               </p>
             </section>
 
@@ -564,24 +621,27 @@ export default function PrivacyPolicyPage() {
               </p>
             </section>
 
-            {/* 15. Contact Information */}
+            {/* 15. Contact Information & Developer Details */}
             <section id="contact-information" className="scroll-mt-28 space-y-4">
               <h2 className="text-2xl font-bold text-slate-900 tracking-tight flex items-center gap-2.5">
                 <span className="w-8 h-8 rounded-lg bg-blue-100 text-blue-700 flex items-center justify-center text-sm font-bold shrink-0">15</span>
-                Contact Information
+                Contact Information & Developer Details
               </h2>
               <p>
-                If you have questions, comments, or data rights inquiries regarding this Privacy Policy or our compliance with Google API Services policies, please contact our support desk:
+                If you have questions, comments, or data rights inquiries regarding this Privacy Policy or our compliance with Google API Services policies, please contact our team directly:
               </p>
 
               <div className="p-6 rounded-2xl bg-white border border-slate-200 shadow-2xs space-y-3">
                 <div className="flex items-center gap-2.5 font-bold text-slate-900 text-base">
                   <Mail className="w-5 h-5 text-blue-600 shrink-0" />
-                  NexRep Support & Privacy Desk
+                  NexRep Support & Privacy Contacts
                 </div>
                 <div className="space-y-1.5 text-sm text-slate-600">
                   <div>
                     <strong>Product:</strong> NexRep (by NexFlowOps)
+                  </div>
+                  <div>
+                    <strong>Lead Developer & Project Maintainer:</strong> Parth Prajapati
                   </div>
                   <div>
                     <strong>Website:</strong>{" "}
@@ -593,16 +653,25 @@ export default function PrivacyPolicyPage() {
                     </a>
                   </div>
                   <div>
-                    <strong>Support Email:</strong>{" "}
+                    <strong>Developer & Privacy Inquiries:</strong>{" "}
                     <a
-                      href="mailto:support@nexrep.app?subject=NexRep%20Privacy%20Inquiry"
+                      href="mailto:parthprajapati7759@gmail.com?subject=NexRep%20Privacy%20Inquiry"
                       className="text-blue-600 font-bold hover:underline"
                     >
-                      support@nexrep.app
+                      parthprajapati7759@gmail.com
+                    </a>
+                  </div>
+                  <div>
+                    <strong>Operations & Support Desk:</strong>{" "}
+                    <a
+                      href="mailto:matrojatech@gmail.com?subject=NexRep%20Support%20Inquiry"
+                      className="text-blue-600 font-bold hover:underline"
+                    >
+                      matrojatech@gmail.com
                     </a>
                   </div>
                   <div className="text-xs text-slate-500 pt-2 border-t border-slate-100">
-                    Our team typically responds to verified user inquiries within 1 business day.
+                    Our team typically responds to verified inquiries within 1 to 2 business days.
                   </div>
                 </div>
               </div>

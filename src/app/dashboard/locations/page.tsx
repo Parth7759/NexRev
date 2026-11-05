@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, Suspense, useMemo } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -20,6 +21,10 @@ import {
   ArrowRight,
   LogOut,
   SlidersHorizontal,
+  ShieldCheck,
+  Lock,
+  ExternalLink,
+  Sparkles,
 } from "lucide-react";
 import { useWorkspace } from "@/contexts/workspace-context";
 import { useLocation } from "@/contexts/location-context";
@@ -76,6 +81,10 @@ function LocationsContent() {
   const [actionSuccessNotice, setActionSuccessNotice] = useState<string | null>(null);
   const [actionErrorNotice, setActionErrorNotice] = useState<string | null>(null);
   const [syncResult, setSyncResult] = useState<SyncLocationsResult | null>(null);
+
+  // Google OAuth Pre-Authorization Disclosure & Consent Modal State
+  const [showOAuthConsentModal, setShowOAuthConsentModal] = useState(false);
+  const [hasAffirmativeConsent, setHasAffirmativeConsent] = useState(false);
 
   // Load integration and active location from database via secure Server Action
   const loadData = useCallback(async () => {
@@ -171,16 +180,30 @@ function LocationsContent() {
     };
   }, [isSelectingProfile, activeWorkspaceId, fetchAvailableProfiles]);
 
-  // Connect Google OAuth start
+  // Open Pre-Authorization Disclosure Modal before initiating Google OAuth
   const handleConnectGoogle = () => {
     if (!activeWorkspaceId) {
       setActionErrorNotice("Please select or create an active workspace before connecting Google Business Profile.");
       return;
     }
-    setIsConnecting(true);
     setActionErrorNotice(null);
+    setHasAffirmativeConsent(false);
+    setShowOAuthConsentModal(true);
+  };
+
+  // User confirms affirmative consent and proceeds to Google OAuth start endpoint
+  const handleProceedWithOAuth = () => {
+    if (!activeWorkspaceId) return;
+    setIsConnecting(true);
+    setShowOAuthConsentModal(false);
     const startUrl = `/api/auth/google/start?workspaceId=${encodeURIComponent(activeWorkspaceId)}`;
     window.location.assign(new URL(startUrl, window.location.origin).toString());
+  };
+
+  // Cancel and dismiss the Pre-Authorization Disclosure Modal
+  const handleCancelConsent = () => {
+    setShowOAuthConsentModal(false);
+    setIsConnecting(false);
   };
 
   // User selects and activates ONE business profile
@@ -279,6 +302,182 @@ function LocationsContent() {
 
   return (
     <div className="space-y-6 max-w-7xl w-full">
+      {/* ========================================================================= */}
+      {/* GOOGLE OAUTH PRE-AUTHORIZATION DISCLOSURE & AFFIRMATIVE CONSENT MODAL     */}
+      {/* ========================================================================= */}
+      {showOAuthConsentModal && (
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="google-consent-modal-title"
+          className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 sm:p-6 overflow-y-auto animate-in fade-in duration-200"
+        >
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-2xl w-full my-auto overflow-hidden animate-in zoom-in-95 duration-200 flex flex-col max-h-[90vh]">
+            {/* Modal Header */}
+            <div className="p-6 border-b border-slate-100 bg-gradient-to-r from-blue-50/80 via-indigo-50/40 to-white flex items-start justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center shadow-xs shrink-0">
+                  <ShieldCheck className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 id="google-consent-modal-title" className="text-lg font-bold text-slate-900">
+                    Google Account Authorization & Data Disclosure
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Please review how NexRep accesses, processes, and protects your Google Business Profile data.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleCancelConsent}
+                className="text-slate-400 hover:text-slate-600 rounded-lg p-1 hover:bg-slate-100 transition-colors"
+                aria-label="Close dialog"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Scrollable Body */}
+            <div className="p-6 space-y-4 overflow-y-auto text-xs text-slate-600 leading-relaxed">
+              {/* Card 1: Data Requested & Scopes */}
+              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
+                <div className="font-bold text-slate-900 flex items-center gap-1.5 text-xs">
+                  <CheckCircle2 className="w-4 h-4 text-blue-600 shrink-0" />
+                  1. Google Business Profile Data Requested
+                </div>
+                <p>
+                  Connecting your account grants NexRep access to:
+                </p>
+                <ul className="list-disc list-inside space-y-0.5 pl-1 text-slate-600">
+                  <li>Your business location profile details (business name, address, phone number).</li>
+                  <li>Customer reviews, ratings (1 to 5 stars), and review comments.</li>
+                  <li>Permission to publish authorized merchant replies on your behalf.</li>
+                </ul>
+                <div className="text-[11px] text-slate-500 font-mono pt-1">
+                  OAuth Scope: https://www.googleapis.com/auth/business.manage
+                </div>
+              </div>
+
+              {/* Card 2: Purpose */}
+              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
+                <div className="font-bold text-slate-900 flex items-center gap-1.5 text-xs">
+                  <Building2 className="w-4 h-4 text-blue-600 shrink-0" />
+                  2. Purpose of Access
+                </div>
+                <p>
+                  We use this data strictly to synchronize your Google reviews into your NexRep inbox, calculate rating analytics and sentiment trends, and publish review replies when you approve them.
+                </p>
+              </div>
+
+              {/* Card 3: AI Processing */}
+              <div className="p-4 rounded-xl bg-indigo-50/60 border border-indigo-200 space-y-1.5">
+                <div className="font-bold text-indigo-950 flex items-center gap-1.5 text-xs">
+                  <Sparkles className="w-4 h-4 text-indigo-600 shrink-0" />
+                  3. AI Processing & Third-Party Disclosure (OpenAI API)
+                </div>
+                <p className="text-indigo-900">
+                  When you or your automated reply rules request a draft response, customer review content (reviewer name, rating, comment text) and your business context are transmitted to OpenAI&rsquo;s commercial API (<code className="bg-indigo-100 px-1 py-0.5 rounded font-mono text-[11px]">gpt-4o-mini</code>) to generate suggested reply drafts.
+                </p>
+                <p className="text-indigo-900">
+                  In accordance with OpenAI&rsquo;s standard API data usage terms, your data is <strong>never used to train or improve AI models</strong>. OpenAI retains API payloads for up to 30 days solely for trust and abuse monitoring.
+                </p>
+              </div>
+
+              {/* Card 4: Google Limited Use */}
+              <div className="p-4 rounded-xl bg-emerald-50/70 border border-emerald-200 space-y-1.5">
+                <div className="font-bold text-emerald-950 flex items-center gap-1.5 text-xs">
+                  <Lock className="w-4 h-4 text-emerald-700 shrink-0" />
+                  4. Google API Services Limited Use Compliance
+                </div>
+                <p className="text-emerald-900">
+                  NexRep complies strictly with the{" "}
+                  <a
+                    href="https://developers.google.com/terms/api-services-user-data-policy"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline font-bold text-emerald-950 hover:text-emerald-700 inline-flex items-center gap-0.5"
+                  >
+                    Google API Services User Data Policy <ExternalLink className="w-3 h-3 inline" />
+                  </a>
+                  , including the Limited Use requirements. Your Google data is <strong>never sold</strong>, never shared with data brokers, and never used for advertising. OAuth tokens are encrypted at rest with AES-256-GCM encryption.
+                </p>
+              </div>
+
+              {/* Card 5: Revocation */}
+              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5">
+                <div className="font-bold text-slate-900 flex items-center gap-1.5 text-xs">
+                  <Info className="w-4 h-4 text-slate-600 shrink-0" />
+                  5. Disconnection & Control
+                </div>
+                <p>
+                  You can disconnect your business profile at any time from this Locations page, or revoke NexRep&rsquo;s authorization directly via{" "}
+                  <a
+                    href="https://myaccount.google.com/permissions"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-600 underline hover:text-blue-700 font-medium inline-flex items-center gap-0.5"
+                  >
+                    Google Account Security <ExternalLink className="w-3 h-3 inline" />
+                  </a>
+                  .
+                </p>
+              </div>
+
+              {/* Affirmative Consent Checkbox */}
+              <label className="flex items-start gap-3 p-3.5 rounded-xl border border-blue-200 bg-blue-50/60 cursor-pointer hover:bg-blue-50 transition-colors">
+                <input
+                  type="checkbox"
+                  id="affirmative-consent-checkbox"
+                  checked={hasAffirmativeConsent}
+                  onChange={(e) => setHasAffirmativeConsent(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500 cursor-pointer shrink-0"
+                />
+                <span className="text-xs text-slate-800 font-medium leading-snug">
+                  I understand and authorize NexRep to access my Google Business Profile data and process customer review content via OpenAI API in accordance with the disclosures above and the{" "}
+                  <Link
+                    href="/privacy-policy"
+                    target="_blank"
+                    className="text-blue-600 underline font-semibold hover:text-blue-700 inline-flex items-center gap-0.5"
+                  >
+                    NexRep Privacy Policy <ExternalLink className="w-3 h-3 inline" />
+                  </Link>
+                  .
+                </span>
+              </label>
+            </div>
+
+            {/* Modal Actions Footer */}
+            <div className="p-4 sm:p-5 border-t border-slate-100 bg-slate-50 flex items-center justify-end gap-3 shrink-0">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleCancelConsent}
+                className="text-xs font-medium"
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                onClick={handleProceedWithOAuth}
+                disabled={!hasAffirmativeConsent || isConnecting}
+                className="bg-slate-900 hover:bg-slate-800 text-white text-xs font-medium shadow-xs disabled:opacity-50"
+              >
+                {isConnecting ? (
+                  <>
+                    <RefreshCw className="mr-1.5 h-3.5 w-3.5 animate-spin" /> Redirecting to Google...
+                  </>
+                ) : (
+                  <>
+                    Consent & Continue to Google <ArrowRight className="ml-1.5 h-3.5 w-3.5" />
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Top Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
