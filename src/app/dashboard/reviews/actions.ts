@@ -10,6 +10,8 @@ import {
   logReplyAudit,
   findExistingReviewReply,
   evaluateReplyApprovalPolicy,
+  toggleFullyAutomaticReplies,
+  isFullyAutomaticModeActive,
 } from '@/lib/reply-safety'
 import { publishGoogleReviewReply } from '@/lib/google-business'
 import { autoProcessSingleReview } from '@/lib/reply-automation'
@@ -647,5 +649,115 @@ export async function getEligibleReviewsForAiAction(
 
   return { success: true, reviews }
 }
+
+export interface AutomationStatusResult {
+  isActive: boolean
+  lastReceivedText: string | null
+  lastPublishedText: string | null
+  pendingCount: number
+  failedCount: number
+  userRole: string | null
+}
+
+/**
+ * Server Action: Fetches real-time review automation status and operational metrics for the workspace.
+ */
+export async function getAutomationStatusAction(workspaceId?: string): Promise<AutomationStatusResult> {
+  const fallback: AutomationStatusResult = {
+    isActive: false,
+    lastReceivedText: null,
+    lastPublishedText: null,
+    pendingCount: 0,
+    failedCount: 0,
+    userRole: null,
+  }
+
+  if (!workspaceId) return fallback
+
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return fallback
+
+  const membership = await verifyWorkspaceMembership(supabase, workspaceId)
+  if (!membership.isMember) return fallback
+
+  const settings = await getWorkspaceReplySettings(supabase, workspaceId)
+  const isAutoActive = isFullyAutomaticModeActive(settings)
+
+  // Latest review received
+  const { data: latestRev } = await supabase
+    .from('reviews')
+    .select('created_at, review_date')
+    .eq('workspace_id', workspaceId)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  // Latest reply published
+  const { data: latestPub } = await supabase
+    .from('review_replies')
+    .select('created_at')
+    .eq('workspace_id', workspaceId)
+    .eq('status', 'published')
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  // Count pending (unanswered) reviews
+  const { count: pendingCount } = await supabase
+    .from('reviews')
+    .select('id', { count: 'exact', head: true })
+    .eq('workspace_id', workspaceId)
+    .eq('status', 'unanswered')
+
+  // Count failed review replies
+  const { count: failedCount } = await supabase
+    .from('review_replies')
+    .select('id', { count: 'exact', head: true })
+    .eq('workspace_id', workspaceId)
+    .eq('status', 'failed')
+
+  return {
+    isActive: isAutoActive,
+    lastReceivedText: latestRev?.created_at ? new Date(latestRev.created_at).toLocaleDateString() : null,
+    lastPublishedText: latestPub?.created_at ? new Date(latestPub.created_at).toLocaleDateString() : null,
+    pendingCount: pendingCount || 0,
+    failedCount: failedCount || 0,
+    userRole: membership.role || null,
+  }
+}
+
+/**
+ * Server Action: Toggles the 24/7 review reply automation status from the Reviews Dashboard.
+ */
+export async function toggleAutomationAction(
+  workspaceId: string,
+  enable: boolean
+): Promise<{ success: boolean; isActive?: boolean; error?: string }> {
+  if (!workspaceId) return { success: false, error: 'Workspace ID is required.' }
+
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: 'You must be signed in.' }
+
+  const membership = await verifyWorkspaceMembership(supabase, workspaceId, ['owner', 'admin'])
+  if (!membership.isMember) {
+    return { success: false, error: 'Only workspace owners and administrators can change automation status.' }
+  }
+
+  const result = await toggleFullyAutomaticReplies(supabase, workspaceId, enable, user.id)
+  if (!result.success) {
+    return { success: false, error: result.error || 'Failed to toggle automation.' }
+  }
+
+  revalidatePath('/dashboard/reviews', 'page')
+  revalidatePath('/dashboard/settings', 'page')
+
+  return {
+    success: true,
+    isActive: result.settings ? isFullyAutomaticModeActive(result.settings) : false,
+  }
+}
+
 
 

@@ -5,7 +5,8 @@ import {
   fetchSingleGoogleReview,
 } from '@/lib/google-business'
 import { autoProcessSingleReview } from '@/lib/reply-automation'
-import { logReplyAudit } from '@/lib/reply-safety'
+import { logReplyAudit, TypedSupabaseClient } from '@/lib/reply-safety'
+import { Database } from '@/types/database.types'
 
 interface PubSubPushBody {
   message?: {
@@ -71,6 +72,52 @@ export async function GET(request: NextRequest) {
     eventDrivenAutomation: 'active',
     timestamp: new Date().toISOString(),
   })
+}
+
+/**
+ * Safely persists database-backed job and event state to review_automation_events.
+ * Gracefully ignores errors if table is not yet migrated, ensuring zero disruption.
+ */
+async function recordAutomationEvent(
+  supabase: TypedSupabaseClient,
+  params: {
+    eventId: string
+    reviewResourceId?: string | null
+    workspaceId: string
+    locationId?: string | null
+    reviewId?: string | null
+    eventType: 'NEW_REVIEW' | 'UPDATED_REVIEW' | 'SYNC_RECONCILIATION'
+    processingStatus: 'received' | 'ai_generating' | 'publishing' | 'published' | 'failed' | 'skipped' | 'draft_saved'
+    aiGeneratedReply?: string | null
+    publishingStatus?: 'pending' | 'published' | 'failed' | 'skipped' | 'draft_saved'
+    retryCount?: number
+    errorMessage?: string | null
+    metadata?: Record<string, unknown>
+  }
+) {
+  try {
+    await supabase.from('review_automation_events').upsert(
+      {
+        event_id: params.eventId,
+        review_resource_id: params.reviewResourceId || null,
+        workspace_id: params.workspaceId,
+        location_id: params.locationId || null,
+        review_id: params.reviewId || null,
+        event_type: params.eventType,
+        processing_status: params.processingStatus,
+        ai_generated_reply: params.aiGeneratedReply || null,
+        publishing_status: params.publishingStatus || 'pending',
+        retry_count: params.retryCount ?? 0,
+        error_message: params.errorMessage || null,
+        metadata: (params.metadata || {}) as Database['public']['Tables']['review_automation_events']['Insert']['metadata'],
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'event_id' }
+    )
+  } catch (err) {
+    // Non-blocking fallback to review_reply_logs
+    console.warn('Failed to record review_automation_events entry (falling back to review_reply_logs):', err)
+  }
 }
 
 /**
@@ -227,6 +274,16 @@ export async function POST(request: NextRequest) {
     const activeLoc = matchedLocations.find((l) => l.is_connected) || matchedLocations[0]
     const workspaceId = activeLoc.workspace_id
 
+    // Initial event record in review_automation_events
+    await recordAutomationEvent(supabase, {
+      eventId: messageId,
+      reviewResourceId: rawResourceName || reviewId,
+      workspaceId,
+      locationId: activeLoc.id,
+      eventType: eventType === 'UPDATED_REVIEW' ? 'UPDATED_REVIEW' : 'NEW_REVIEW',
+      processingStatus: 'received',
+    })
+
     // 6. Idempotency Check: Check if review reply was already published
     const { data: existingReview } = await supabase
       .from('reviews')
@@ -255,6 +312,18 @@ export async function POST(request: NextRequest) {
         : [existingReview.review_replies]
       const hasPublishedReply = replies.some((r) => r.status === 'published')
       if (hasPublishedReply) {
+        await recordAutomationEvent(supabase, {
+          eventId: messageId,
+          reviewResourceId: rawResourceName || reviewId,
+          workspaceId,
+          locationId: activeLoc.id,
+          reviewId: existingReview.id,
+          eventType: eventType === 'UPDATED_REVIEW' ? 'UPDATED_REVIEW' : 'NEW_REVIEW',
+          processingStatus: 'skipped',
+          publishingStatus: 'skipped',
+          metadata: { reason: 'Review already has a published reply.' },
+        })
+
         return NextResponse.json({
           success: true,
           acknowledged: true,
@@ -379,6 +448,18 @@ export async function POST(request: NextRequest) {
           },
           { onConflict: 'review_id' }
         )
+
+        await recordAutomationEvent(supabase, {
+          eventId: messageId,
+          reviewResourceId: rawResourceName || reviewId,
+          workspaceId,
+          locationId: activeLoc.id,
+          reviewId: reviewDbId,
+          eventType: eventType === 'UPDATED_REVIEW' ? 'UPDATED_REVIEW' : 'NEW_REVIEW',
+          processingStatus: 'skipped',
+          publishingStatus: 'skipped',
+          metadata: { reason: 'Review already has an existing merchant reply directly from Google. Overwrite prevented.' },
+        })
       }
 
       return NextResponse.json({
@@ -457,6 +538,27 @@ export async function POST(request: NextRequest) {
         eventType,
         rating: fetchedReviewData.rating,
         status: processResult.status,
+        requiresApproval: processResult.requiresApproval,
+      },
+    })
+
+    const pubStatus: 'published' | 'failed' | 'draft_saved' =
+      processResult.status === 'published' ? 'published' : processResult.status === 'failed' ? 'failed' : 'draft_saved'
+
+    await recordAutomationEvent(supabase, {
+      eventId: messageId,
+      reviewResourceId: rawResourceName || reviewId,
+      workspaceId,
+      locationId: activeLoc.id,
+      reviewId: reviewDbId,
+      eventType: eventType === 'UPDATED_REVIEW' ? 'UPDATED_REVIEW' : 'NEW_REVIEW',
+      processingStatus: pubStatus,
+      aiGeneratedReply: processResult.replyContent || null,
+      publishingStatus: pubStatus,
+      errorMessage: processResult.error || null,
+      metadata: {
+        rating: fetchedReviewData.rating,
+        policyReason: processResult.reason,
         requiresApproval: processResult.requiresApproval,
       },
     })

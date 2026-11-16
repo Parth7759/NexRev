@@ -456,6 +456,60 @@ export interface Database {
         }
         Relationships: []
       }
+      review_automation_events: {
+        Row: {
+          id: string
+          event_id: string
+          review_resource_id: string | null
+          workspace_id: string
+          location_id: string | null
+          review_id: string | null
+          event_type: 'NEW_REVIEW' | 'UPDATED_REVIEW' | 'SYNC_RECONCILIATION'
+          processing_status: 'received' | 'ai_generating' | 'publishing' | 'published' | 'failed' | 'skipped' | 'draft_saved'
+          ai_generated_reply: string | null
+          publishing_status: 'pending' | 'published' | 'failed' | 'skipped' | 'draft_saved'
+          retry_count: number
+          error_message: string | null
+          metadata: Json
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          event_id: string
+          review_resource_id?: string | null
+          workspace_id: string
+          location_id?: string | null
+          review_id?: string | null
+          event_type?: 'NEW_REVIEW' | 'UPDATED_REVIEW' | 'SYNC_RECONCILIATION'
+          processing_status?: 'received' | 'ai_generating' | 'publishing' | 'published' | 'failed' | 'skipped' | 'draft_saved'
+          ai_generated_reply?: string | null
+          publishing_status?: 'pending' | 'published' | 'failed' | 'skipped' | 'draft_saved'
+          retry_count?: number
+          error_message?: string | null
+          metadata?: Json
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          event_id?: string
+          review_resource_id?: string | null
+          workspace_id?: string
+          location_id?: string | null
+          review_id?: string | null
+          event_type?: 'NEW_REVIEW' | 'UPDATED_REVIEW' | 'SYNC_RECONCILIATION'
+          processing_status?: 'received' | 'ai_generating' | 'publishing' | 'published' | 'failed' | 'skipped' | 'draft_saved'
+          ai_generated_reply?: string | null
+          publishing_status?: 'pending' | 'published' | 'failed' | 'skipped' | 'draft_saved'
+          retry_count?: number
+          error_message?: string | null
+          metadata?: Json
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
