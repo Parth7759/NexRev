@@ -7,6 +7,7 @@ import {
 import { autoProcessSingleReview } from '@/lib/reply-automation'
 import { logReplyAudit, TypedSupabaseClient } from '@/lib/reply-safety'
 import { Database } from '@/types/database.types'
+import { authenticateGooglePubSubWebhook } from '@/lib/google-pubsub-auth'
 
 interface PubSubPushBody {
   message?: {
@@ -59,7 +60,7 @@ export async function GET(request: NextRequest) {
 
   const expectedToken = process.env.GOOGLE_PUBSUB_VERIFICATION_TOKEN
 
-  if (expectedToken && token !== expectedToken) {
+  if (expectedToken && expectedToken.trim() !== '' && token !== expectedToken) {
     return NextResponse.json(
       { success: false, error: 'Unauthorized: Invalid verification token' },
       { status: 401 }
@@ -70,6 +71,12 @@ export async function GET(request: NextRequest) {
     status: 'ok',
     service: 'NexRep Google Business Profile Pub/Sub Push Webhook',
     eventDrivenAutomation: 'active',
+    authConfig: {
+      oidcConfigured: Boolean(
+        process.env.GOOGLE_PUBSUB_PUSH_AUDIENCE || process.env.GOOGLE_PUBSUB_PUSH_SERVICE_ACCOUNT
+      ),
+      tokenConfigured: Boolean(expectedToken && expectedToken.trim() !== ''),
+    },
     timestamp: new Date().toISOString(),
   })
 }
@@ -128,26 +135,14 @@ async function recordAutomationEvent(
  * and immediately publishes to Google when Fully Automatic AI Replies mode is enabled.
  */
 export async function POST(request: NextRequest) {
-  const url = new URL(request.url)
-  const queryToken =
-    url.searchParams.get('token') ||
-    url.searchParams.get('verification_token')
-  const headerToken = request.headers.get('x-goog-pubsub-verification-token')
-  const authHeader = request.headers.get('authorization')
-  const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.substring(7) : null
-
-  const verificationToken = queryToken || headerToken || bearerToken
-  const expectedToken = process.env.GOOGLE_PUBSUB_VERIFICATION_TOKEN
-
-  // 1. Verify incoming Webhook Token if configured
-  if (expectedToken && expectedToken.trim() !== '') {
-    if (!verificationToken || verificationToken !== expectedToken) {
-      console.warn('Google Pub/Sub webhook unauthorized: Token mismatch or missing.')
-      return NextResponse.json(
-        { success: false, error: 'Unauthorized: Invalid Pub/Sub verification token' },
-        { status: 401 }
-      )
-    }
+  // 1. Authenticate incoming request via Google-signed OIDC JWT and/or verification token
+  const auth = await authenticateGooglePubSubWebhook(request)
+  if (!auth.authenticated) {
+    console.warn('Google Pub/Sub webhook unauthorized:', auth.error)
+    return NextResponse.json(
+      { success: false, error: auth.error || 'Unauthorized: Invalid Pub/Sub authentication' },
+      { status: auth.status || 401 }
+    )
   }
 
   // 2. Parse Pub/Sub push message payload
@@ -282,6 +277,10 @@ export async function POST(request: NextRequest) {
       locationId: activeLoc.id,
       eventType: eventType === 'UPDATED_REVIEW' ? 'UPDATED_REVIEW' : 'NEW_REVIEW',
       processingStatus: 'received',
+      metadata: {
+        oidcVerified: Boolean(auth.claims),
+        serviceAccount: auth.claims?.email || null,
+      },
     })
 
     // 6. Idempotency Check: Check if review reply was already published
@@ -560,6 +559,8 @@ export async function POST(request: NextRequest) {
         rating: fetchedReviewData.rating,
         policyReason: processResult.reason,
         requiresApproval: processResult.requiresApproval,
+        oidcVerified: Boolean(auth.claims),
+        serviceAccount: auth.claims?.email || null,
       },
     })
 
