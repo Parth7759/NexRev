@@ -297,3 +297,97 @@ export async function findExistingReviewReply(
     return null
   }
 }
+
+/**
+ * Checks whether Fully Automatic AI Replies for all 1-5 star reviews is active.
+ */
+export function isFullyAutomaticModeActive(settings: WorkspaceReplySettings): boolean {
+  return settings.autoReplyMode === 'auto_publish_all' && !settings.requireApprovalForCritical
+}
+
+/**
+ * Toggles Fully Automatic AI Replies (All 1-5 Star Reviews).
+ * When active: AI generates and immediately publishes replies to Google for ALL ratings without human review.
+ * When paused: Returns to manual approval mode where all replies are saved as drafts.
+ */
+export async function toggleFullyAutomaticReplies(
+  supabase: TypedSupabaseClient,
+  workspaceId: string,
+  enable: boolean,
+  userId?: string | null
+): Promise<{ success: boolean; settings?: WorkspaceReplySettings; error?: string }> {
+  try {
+    const current = await getWorkspaceReplySettings(supabase, workspaceId)
+
+    const updatedMode: AutoReplyMode = enable ? 'auto_publish_all' : 'manual_approval'
+    const updatedCriticalApproval = !enable // false when full auto enabled, true when paused
+    const updatedMinRating = enable ? 1 : 4
+
+    const packedContext = packBusinessContextAndConfig(current.businessContext, {
+      negativeReviewAlertsEnabled: current.negativeReviewAlertsEnabled ?? true,
+      negativeReviewAlertThreshold: current.negativeReviewAlertThreshold ?? 3,
+    })
+
+    const { data, error } = await supabase
+      .from('workspace_settings')
+      .upsert({
+        workspace_id: workspaceId,
+        auto_reply_mode: updatedMode,
+        require_approval_for_critical: updatedCriticalApproval,
+        default_reply_tone: current.defaultReplyTone,
+        business_context: packedContext,
+        auto_reply_min_rating: updatedMinRating,
+        auto_reply_delay_minutes: current.autoReplyDelayMinutes,
+        updated_at: new Date().toISOString(),
+      })
+      .select('*')
+      .single()
+
+    if (error) {
+      return { success: false, error: `Failed to update automation mode: ${error.message}` }
+    }
+
+    const { cleanBusinessContext, negativeReviewAlertsEnabled, negativeReviewAlertThreshold } =
+      parseBusinessContextAndConfig(data.business_context)
+
+    const newSettings: WorkspaceReplySettings = {
+      workspaceId: data.workspace_id,
+      autoReplyMode: data.auto_reply_mode,
+      requireApprovalForCritical: data.require_approval_for_critical,
+      defaultReplyTone: data.default_reply_tone,
+      businessContext: cleanBusinessContext,
+      autoReplyMinRating: data.auto_reply_min_rating,
+      autoReplyDelayMinutes: data.auto_reply_delay_minutes,
+      negativeReviewAlertsEnabled,
+      negativeReviewAlertThreshold,
+    }
+
+    // Record audit log for automation state change
+    try {
+      await supabase.from('review_reply_logs').insert({
+        workspace_id: workspaceId,
+        review_id: '00000000-0000-0000-0000-000000000000', // System-level event marker
+        user_id: userId || null,
+        action: enable ? 'published' : 'edited',
+        content: enable
+          ? 'Fully Automatic AI Replies (1-5 Stars) ENABLED by authorized owner/admin.'
+          : 'Fully Automatic AI Replies PAUSED by authorized owner/admin.',
+        metadata: {
+          event: 'fully_automatic_replies_toggled',
+          enabled: enable,
+          autoReplyMode: updatedMode,
+          requireApprovalForCritical: updatedCriticalApproval,
+          timestamp: new Date().toISOString(),
+        },
+      })
+    } catch {
+      // Non-blocking
+    }
+
+    return { success: true, settings: newSettings }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Unknown toggle failure'
+    return { success: false, error: msg }
+  }
+}
+

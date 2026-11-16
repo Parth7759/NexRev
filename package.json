@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "eslint",
     "test": "npx tsx scripts/test-automation-e2e.ts",
+    "test:pubsub": "node scripts/run-test-event-driven.mjs",
     "worker": "node scripts/scheduled-worker.mjs"
   },
   "dependencies": {

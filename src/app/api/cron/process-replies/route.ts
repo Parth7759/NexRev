@@ -4,14 +4,16 @@ import { autoProcessWorkspaceUnansweredReviews } from '@/lib/reply-automation'
 import { syncAllActiveWorkspacesGoogleReviews } from '@/lib/google-review-sync'
 
 /**
- * Scheduled Cron Job Endpoint: /api/cron/process-replies
+ * Scheduled Cron / Fallback Reconciliation Job: /api/cron/process-replies
  *
- * 1. Automatically synchronizes new and edited Google Business Profile reviews across active connected workspaces.
- * 2. Scans unanswered customer reviews and generates personalized AI replies for every rating (1 to 5 stars).
- * 3. Automatically publishes or saves as drafts according to each workspace's configured safety policy.
+ * Primary automation is event-driven via Google Cloud Pub/Sub (/api/webhooks/google-pubsub).
+ * This endpoint acts as a self-healing reconciliation safety net to:
+ * 1. Synchronize any missed or delayed Google reviews across connected workspaces.
+ * 2. Process any remaining unanswered reviews according to workspace reply policy (auto-publish or draft).
+ * 3. Ensure 100% reply coverage even during third-party webhook interruptions.
  *
  * Security:
- * - In production, requires `Authorization: Bearer <CRON_SECRET>` or `?secret=<CRON_SECRET>`.
+ * - Requires `Authorization: Bearer <CRON_SECRET>` or `?secret=<CRON_SECRET>`.
  * - Vercel automatically passes this header for jobs configured in vercel.json.
  */
 export async function GET(request: NextRequest) {

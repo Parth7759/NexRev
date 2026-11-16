@@ -656,3 +656,224 @@ export async function publishGoogleReviewReply(
   }
 }
 
+export interface SingleReviewResult {
+  success: boolean
+  review?: GoogleReviewData
+  error?: string
+  errorCode?: string
+}
+
+/**
+ * Fetches a single review from Google Business Profile API by resource name or account/location/review IDs.
+ */
+export async function fetchSingleGoogleReview(
+  accessToken: string,
+  resource:
+    | string
+    | {
+        accountId: string
+        locationId: string
+        reviewId: string
+      }
+): Promise<SingleReviewResult> {
+  try {
+    let accountId = ''
+    let locationId = ''
+    let reviewId = ''
+
+    if (typeof resource === 'string') {
+      const clean = resource.replace(/^\/+/, '')
+      const match = clean.match(/(?:accounts\/)?([^/]+)\/(?:locations\/)?([^/]+)\/(?:reviews\/)?([^/]+)/)
+      if (match) {
+        accountId = match[1]
+        locationId = match[2]
+        reviewId = match[3]
+      } else {
+        return { success: false, error: `Invalid Google review resource name format: "${resource}"` }
+      }
+    } else {
+      accountId = resource.accountId.replace(/^accounts\//, '')
+      locationId = resource.locationId.replace(/^locations\//, '')
+      reviewId = resource.reviewId.replace(/^reviews\//, '')
+    }
+
+    const cleanReviewId = reviewId.replace(/^reviews\//, '')
+    const url = `https://mybusiness.googleapis.com/v4/accounts/${accountId}/locations/${locationId}/reviews/${cleanReviewId}`
+
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+      },
+    })
+
+    if (!res.ok) {
+      const errorText = await res.text()
+      let parsedMessage = `Status ${res.status}: ${res.statusText}`
+      try {
+        const json = JSON.parse(errorText)
+        parsedMessage = json.error?.message || parsedMessage
+      } catch {
+        // use raw
+      }
+
+      return {
+        success: false,
+        error: `Failed to fetch single review from Google: ${parsedMessage}`,
+        errorCode: res.status === 401 ? 'INVALID_GRANT' : res.status === 403 ? 'PERMISSION_DENIED' : 'UNKNOWN',
+      }
+    }
+
+    const data = await res.json()
+    const resolvedReviewId = data.reviewId || cleanReviewId
+
+    return {
+      success: true,
+      review: {
+        reviewId: resolvedReviewId,
+        authorName: data.reviewer?.displayName || 'Google Customer',
+        authorPhotoUrl: data.reviewer?.profilePhotoUrl || null,
+        rating: parseStarRating(data.starRating),
+        content: data.comment || '',
+        reviewDate: data.updateTime || data.createTime || new Date().toISOString(),
+        reply: data.reviewReply?.comment
+          ? {
+              comment: data.reviewReply.comment,
+              updateTime: data.reviewReply.updateTime,
+            }
+          : undefined,
+      },
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Network error fetching single review'
+    return {
+      success: false,
+      error: msg,
+      errorCode: 'NETWORK_ERROR',
+    }
+  }
+}
+
+export interface GoogleNotificationSetting {
+  name?: string
+  pubsubTopic?: string
+  notificationTypes?: string[]
+}
+
+/**
+ * Retrieves the current Google Business Profile account notification settings (Pub/Sub topic and event types).
+ */
+export async function getGoogleAccountNotificationSetting(
+  accessToken: string,
+  accountName: string
+): Promise<{ success: boolean; setting?: GoogleNotificationSetting; error?: string }> {
+  const normalizedAccount = accountName.startsWith('accounts/') ? accountName : `accounts/${accountName}`
+
+  // 1. Try Google My Business Account Management API v1
+  try {
+    const v1Url = `https://mybusinessaccountmanagement.googleapis.com/v1/${normalizedAccount}/notificationSetting`
+    const res = await fetch(v1Url, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+      },
+    })
+
+    if (res.ok) {
+      const data = await res.json()
+      return { success: true, setting: data }
+    }
+  } catch {
+    // Continue to fallback
+  }
+
+  // 2. Fallback to GMB v4 notificationSetting endpoint
+  try {
+    const v4Url = `https://mybusiness.googleapis.com/v4/${normalizedAccount}/notificationSetting`
+    const res = await fetch(v4Url, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json',
+      },
+    })
+
+    if (res.ok) {
+      const data = await res.json()
+      return { success: true, setting: data }
+    }
+
+    const text = await res.text()
+    return { success: false, error: `Failed to fetch notification setting: ${text}` }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Network error'
+    return { success: false, error: msg }
+  }
+}
+
+/**
+ * Configures the Google Business Profile Cloud Pub/Sub notification setting for the specified account.
+ * Subscribes to NEW_REVIEW and UPDATED_REVIEW events.
+ */
+export async function updateGoogleAccountNotificationSetting(
+  accessToken: string,
+  accountName: string,
+  pubsubTopic: string,
+  notificationTypes: string[] = ['NEW_REVIEW', 'UPDATED_REVIEW']
+): Promise<{ success: boolean; setting?: GoogleNotificationSetting; error?: string }> {
+  const normalizedAccount = accountName.startsWith('accounts/') ? accountName : `accounts/${accountName}`
+
+  // 1. Try Google My Business Account Management API v1 PATCH
+  try {
+    const v1Url = `https://mybusinessaccountmanagement.googleapis.com/v1/${normalizedAccount}/notificationSetting?updateMask=pubsubTopic,notificationTypes`
+    const res = await fetch(v1Url, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({
+        name: `${normalizedAccount}/notificationSetting`,
+        pubsubTopic,
+        notificationTypes,
+      }),
+    })
+
+    if (res.ok) {
+      const data = await res.json()
+      return { success: true, setting: data }
+    }
+  } catch {
+    // Continue to fallback
+  }
+
+  // 2. Fallback to GMB v4 notificationSetting PUT
+  try {
+    const v4Url = `https://mybusiness.googleapis.com/v4/${normalizedAccount}/notificationSetting`
+    const res = await fetch(v4Url, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({
+        pubsubTopic,
+        notificationTypes,
+      }),
+    })
+
+    if (res.ok) {
+      const data = await res.json()
+      return { success: true, setting: data }
+    }
+
+    const text = await res.text()
+    return { success: false, error: `Failed to configure notification setting: ${text}` }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Network error'
+    return { success: false, error: msg }
+  }
+}
+
+

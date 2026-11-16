@@ -8,6 +8,8 @@ import {
   DEFAULT_REPLY_SETTINGS,
   AutoReplyMode,
   packBusinessContextAndConfig,
+  toggleFullyAutomaticReplies,
+  isFullyAutomaticModeActive,
 } from '@/lib/reply-safety'
 
 export interface SaveSettingsInput {
@@ -131,6 +133,49 @@ export async function saveWorkspaceSettingsAction(
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to update settings.'
     return { success: false, error: msg }
+  }
+}
+
+export async function toggleFullyAutomaticModeAction(
+  workspaceId: string,
+  enable: boolean
+) {
+  if (!workspaceId) {
+    return { success: false, error: 'Workspace ID is required.' }
+  }
+
+  const supabase = await createClient()
+  const { data: { user }, error: authError } = await supabase.auth.getUser()
+
+  if (authError || !user) {
+    return { success: false, error: 'You must be signed in to change workspace automation settings.' }
+  }
+
+  const membership = await verifyWorkspaceMembership(supabase, workspaceId, ['owner', 'admin'])
+  if (!membership.isMember) {
+    return {
+      success: false,
+      error: membership.error || 'Only workspace owners and administrators can modify automation settings.',
+    }
+  }
+
+  const result = await toggleFullyAutomaticReplies(supabase, workspaceId, enable, user.id)
+
+  if (!result.success) {
+    return { success: false, error: result.error || 'Failed to toggle fully automatic replies.' }
+  }
+
+  revalidatePath('/dashboard', 'layout')
+  revalidatePath('/dashboard/settings', 'page')
+  revalidatePath('/dashboard/reviews', 'page')
+
+  return {
+    success: true,
+    message: enable
+      ? 'Fully Automatic AI Replies activated for all 1-5 star reviews.'
+      : 'Fully Automatic AI Replies paused. Reverted to manual approval.',
+    settings: result.settings,
+    isFullyAutomatic: result.settings ? isFullyAutomaticModeActive(result.settings) : false,
   }
 }
 
