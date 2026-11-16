@@ -380,7 +380,7 @@ function LocationsContent() {
                   When you or your automated reply rules request a draft response, customer review content (reviewer name, rating, comment text) and your business context are transmitted to OpenAI&rsquo;s commercial API (<code className="bg-indigo-100 px-1 py-0.5 rounded font-mono text-[11px]">gpt-4o-mini</code>) to generate suggested reply drafts.
                 </p>
                 <p className="text-indigo-900">
-                  In accordance with OpenAI&rsquo;s standard API data usage terms, your data is <strong>never used to train or improve AI models</strong>. OpenAI retains API payloads for up to 30 days solely for trust and abuse monitoring.
+                  In accordance with OpenAI&rsquo;s API data usage terms, API data is not used for model training unless the customer explicitly opts in. Abuse-monitoring logs are retained for up to 30 days by default, subject to legal and safety exceptions.
                 </p>
               </div>
 
@@ -411,7 +411,7 @@ function LocationsContent() {
                   5. Disconnection & Control
                 </div>
                 <p>
-                  You can disconnect your business profile at any time from this Locations page, or revoke NexRep&rsquo;s authorization directly via{" "}
+                  You can disconnect your business profile at any time from this Locations page (which immediately marks the profile inactive, halts review synchronization, and pauses auto-replies while keeping historical reviews), or revoke NexRep&rsquo;s OAuth authorization completely via{" "}
                   <a
                     href="https://myaccount.google.com/permissions"
                     target="_blank"

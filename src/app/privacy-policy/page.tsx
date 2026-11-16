@@ -313,12 +313,18 @@ export default function PrivacyPolicyPage() {
                     Third-Party AI Service Provider (OpenAI API)
                   </h3>
                   <p className="text-sm text-slate-600 leading-relaxed">
-                    NexRep utilizes OpenAI&rsquo;s standard commercial API platform (specifically model <code className="bg-slate-100 px-1 py-0.5 rounded font-mono text-xs">gpt-4o-mini</code>). In accordance with OpenAI&rsquo;s standard API data usage policies:
+                    NexRep utilizes OpenAI&rsquo;s commercial API platform (specifically model <code className="bg-slate-100 px-1 py-0.5 rounded font-mono text-xs">gpt-4o-mini</code>). In accordance with OpenAI&rsquo;s API data usage terms:
                   </p>
-                  <ul className="list-disc list-inside text-xs text-slate-600 space-y-1 pl-1">
-                    <li><strong>No Model Training:</strong> Data submitted via the commercial API is <strong>NOT used by OpenAI to train or improve models</strong>.</li>
-                    <li><strong>30-Day Retention for Abuse Monitoring:</strong> OpenAI retains API input and output payloads for up to <strong>30 days</strong> solely for trust, safety, and abuse monitoring purposes, after which it is deleted according to OpenAI&rsquo;s standard platform controls.</li>
-                    <li><strong>Standard Commercial API:</strong> NexRep operates under OpenAI&rsquo;s standard commercial API platform terms and does not claim custom zero-retention (ZDR) agreements or HIPAA exemptions.</li>
+                  <ul className="list-disc list-inside text-xs text-slate-600 space-y-1.5 pl-1">
+                    <li>
+                      <strong>Model Training:</strong> API data is not used for model training unless the customer explicitly opts in.
+                    </li>
+                    <li>
+                      <strong>Abuse-Monitoring Logs:</strong> Abuse-monitoring logs are retained for up to 30 days by default, subject to legal and safety exceptions.
+                    </li>
+                    <li>
+                      <strong>Commercial API Controls:</strong> NexRep operates under OpenAI&rsquo;s standard commercial API terms and data controls, and does not claim custom zero-retention (ZDR) agreements or HIPAA Business Associate Agreements (BAAs).
+                    </li>
                   </ul>
                 </div>
 
@@ -366,7 +372,7 @@ export default function PrivacyPolicyPage() {
                     <Database className="w-4 h-4 text-blue-600" /> Managed Supabase Infrastructure
                   </h4>
                   <p className="text-xs text-slate-600">
-                    Data is stored in high-availability PostgreSQL databases hosted by Supabase, protected by automated daily backups and network isolation.
+                    Data is stored in managed PostgreSQL databases hosted by Supabase, protected by automated infrastructure backups and network isolation.
                   </p>
                 </div>
                 <div className="p-4 rounded-xl bg-white border border-slate-200">
@@ -474,7 +480,7 @@ export default function PrivacyPolicyPage() {
                   <strong>Account & Workspace Deletion:</strong> Upon receiving a verified account or workspace deletion request, all associated personal profiles, workspace records, locations, reviews, and OAuth integration records are permanently purged from our active primary database within 30 days.
                 </li>
                 <li>
-                  <strong>Database Backups vs. Primary Database:</strong> Residual copies may temporarily persist in automated, encrypted database backups for up to 30 additional days before being routinely overwritten by standard backup rotation cycles.
+                  <strong>Database Backups & Disaster Recovery:</strong> Residual copies may temporarily persist in encrypted, automated database snapshots maintained by our database infrastructure provider (Supabase) for disaster recovery and operational continuity. These backups expire and are routinely overwritten according to Supabase&rsquo;s managed infrastructure retention cycles (which vary by project plan and tier; we do not independently promise an exact 30-day backup purge window). Once backup cycles rotate, all residual copies are permanently deleted.
                 </li>
                 <li>
                   <strong>Third-Party Logs:</strong> Log records maintained by third-party infrastructure providers (Vercel, Supabase, Google Cloud, OpenAI) are retained according to their own standard system retention schedules.
@@ -489,7 +495,7 @@ export default function PrivacyPolicyPage() {
                 Google Account Disconnection & Access Revocation
               </h2>
               <p>
-                You retain full control over your Google Business Profile connection. You can disconnect or revoke NexRep&rsquo;s access at any time through any of the following methods:
+                You retain full control over your Google Business Profile connection. You can disconnect or revoke NexRep&rsquo;s access at any time through the following mechanisms:
               </p>
               <div className="grid sm:grid-cols-2 gap-4 pt-1">
                 <div className="p-4 rounded-xl bg-white border border-slate-200 space-y-2">
@@ -498,7 +504,7 @@ export default function PrivacyPolicyPage() {
                     Within the NexRep Dashboard
                   </h4>
                   <p className="text-xs text-slate-600 leading-relaxed">
-                    Navigate to <strong>Dashboard &gt; Locations</strong> and click <em>&ldquo;Disconnect Profile&rdquo;</em>. This immediately marks the profile disconnected (<code className="bg-slate-100 px-1 py-0.5 rounded font-mono text-[11px]">is_connected = false</code>), stops review synchronization, and pauses automated replies.
+                    Navigate to <strong>Dashboard &gt; Locations</strong> and click <em>&ldquo;Disconnect Profile&rdquo;</em>. This action immediately updates the location status to inactive (<code className="bg-slate-100 px-1 py-0.5 rounded font-mono text-[11px]">is_connected = false</code>), stopping review synchronization and pausing automated replies. Previously imported reviews remain preserved in your workspace history, and the OAuth credentials remain stored in our encrypted database to allow seamless profile reconnection.
                   </p>
                 </div>
                 <div className="p-4 rounded-xl bg-white border border-slate-200 space-y-2">
@@ -507,7 +513,7 @@ export default function PrivacyPolicyPage() {
                     Directly via Google Account Security
                   </h4>
                   <p className="text-xs text-slate-600 leading-relaxed">
-                    You can independently revoke NexRep&rsquo;s authorization at any time by visiting your Google Account Third-Party Access dashboard at{" "}
+                    To completely invalidate and revoke NexRep&rsquo;s OAuth authorization tokens from Google&rsquo;s servers, visit your Google Account Third-Party Access dashboard at{" "}
                     <a
                       href="https://myaccount.google.com/permissions"
                       target="_blank"
@@ -516,7 +522,7 @@ export default function PrivacyPolicyPage() {
                     >
                       myaccount.google.com/permissions <ExternalLink className="w-3 h-3 inline" />
                     </a>
-                    . This immediately invalidates the OAuth token on Google&rsquo;s authorization servers.
+                    . Alternatively, you may contact our support desk to request manual deletion of your stored OAuth integration record from our database.
                   </p>
                 </div>
               </div>
