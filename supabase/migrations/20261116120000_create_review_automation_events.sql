@@ -40,8 +40,22 @@ CREATE POLICY "Members can view review automation events"
   ON public.review_automation_events FOR SELECT TO authenticated
   USING (public.is_workspace_member(workspace_id));
 
+-- Restrict mutations to workspace owners and admins (ordinary members have read-only access)
+DROP POLICY IF EXISTS "Admins and owners can insert review automation events" ON public.review_automation_events;
+CREATE POLICY "Admins and owners can insert review automation events"
+  ON public.review_automation_events FOR INSERT TO authenticated
+  WITH CHECK (public.has_workspace_role(workspace_id, ARRAY['owner', 'admin']));
+
+DROP POLICY IF EXISTS "Admins and owners can update review automation events" ON public.review_automation_events;
+CREATE POLICY "Admins and owners can update review automation events"
+  ON public.review_automation_events FOR UPDATE TO authenticated
+  USING (public.has_workspace_role(workspace_id, ARRAY['owner', 'admin']))
+  WITH CHECK (public.has_workspace_role(workspace_id, ARRAY['owner', 'admin']));
+
+DROP POLICY IF EXISTS "Admins and owners can delete review automation events" ON public.review_automation_events;
+CREATE POLICY "Admins and owners can delete review automation events"
+  ON public.review_automation_events FOR DELETE TO authenticated
+  USING (public.has_workspace_role(workspace_id, ARRAY['owner', 'admin']));
+
 DROP POLICY IF EXISTS "Members can manage review automation events" ON public.review_automation_events;
-CREATE POLICY "Members can manage review automation events"
-  ON public.review_automation_events FOR ALL TO authenticated
-  USING (public.is_workspace_member(workspace_id))
-  WITH CHECK (public.is_workspace_member(workspace_id));
+
