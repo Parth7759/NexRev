@@ -64,6 +64,19 @@ export interface WorkerRunSummary {
   deadLettered: number
   healthProbesRun: number
   notificationReconciliationsRun?: number
+  fallbackReviewSync?: {
+    workspacesScanned: number
+    workspacesSynced: number
+    workspacesThrottled: number
+    workspacesFailed: number
+    fetched: number
+    inserted: number
+    updated: number
+    skipped: number
+    enqueued: number
+    deduplicatedJobs: number
+    failed: number
+  }
   errors: Array<{ jobId: string; reviewId: string; error: string }>
 }
 
@@ -322,6 +335,32 @@ export async function recordGoogleConnectionHealth(
 ): Promise<void> {
   try {
     const nowIso = new Date().toISOString()
+
+    // Preserve existing metadata keys (e.g., fallbackReviewSync telemetry) across health probe updates
+    let existingMeta: Record<string, unknown> = {}
+    try {
+      const { data: existingRow } = await supabase
+        .from('google_connection_health')
+        .select('metadata')
+        .eq('workspace_id', workspaceId)
+        .maybeSingle()
+
+      if (
+        existingRow?.metadata &&
+        typeof existingRow.metadata === 'object' &&
+        !Array.isArray(existingRow.metadata)
+      ) {
+        existingMeta = { ...(existingRow.metadata as Record<string, unknown>) }
+      }
+    } catch {
+      // Non-blocking: proceed with incoming metadata if read fails
+    }
+
+    const mergedMeta = {
+      ...existingMeta,
+      ...(update.metadata || {}),
+    }
+
     const payload: Database['public']['Tables']['google_connection_health']['Insert'] = {
       workspace_id: workspaceId,
       status: update.status,
@@ -329,7 +368,7 @@ export async function recordGoogleConnectionHealth(
       updated_at: nowIso,
       last_error_code: update.lastErrorCode ?? null,
       last_error_message: update.lastErrorMessage ?? null,
-      metadata: (update.metadata || {}) as Json,
+      metadata: mergedMeta as Json,
     }
     if (typeof update.tokenStored === 'boolean') payload.token_stored = update.tokenStored
     if (typeof update.hasRequiredScope === 'boolean') {
@@ -989,6 +1028,10 @@ export async function runScheduledReplyWorker(
     dryRun?: boolean
     skipHealthProbe?: boolean
     healthProbeIntervalMinutes?: number
+    skipFallbackSync?: boolean
+    fallbackSyncIntervalMinutes?: number
+    fallbackSyncLookbackHours?: number
+    fallbackSyncMaxWorkspaces?: number
     nowMs?: number
   }
 ): Promise<WorkerRunSummary> {
@@ -1152,6 +1195,38 @@ export async function runScheduledReplyWorker(
       } catch (reconErr) {
         console.warn('Non-blocking notification reconciliation error:', reconErr)
       }
+
+      // Isolated post-job queue-safe periodic Google review fallback sync (every 10m per workspace).
+      // Recovers reviews missed by Google Pub/Sub without ever publishing replies directly
+      // or delaying due reply job execution.
+      if (!options?.skipFallbackSync) {
+        try {
+          const { runPeriodicGoogleReviewFallbackSync } = await import(
+            '@/lib/google-review-sync'
+          )
+          const fallbackSummary = await runPeriodicGoogleReviewFallbackSync(supabase, {
+            intervalMinutes: options?.fallbackSyncIntervalMinutes ?? 10,
+            lookbackHours: options?.fallbackSyncLookbackHours ?? 24,
+            maxWorkspacesPerTick: options?.fallbackSyncMaxWorkspaces ?? 10,
+            nowMs,
+          })
+          summary.fallbackReviewSync = {
+            workspacesScanned: fallbackSummary.workspacesScanned,
+            workspacesSynced: fallbackSummary.workspacesSynced,
+            workspacesThrottled: fallbackSummary.workspacesThrottled,
+            workspacesFailed: fallbackSummary.workspacesFailed,
+            fetched: fallbackSummary.fetched,
+            inserted: fallbackSummary.inserted,
+            updated: fallbackSummary.updated,
+            skipped: fallbackSummary.skipped,
+            enqueued: fallbackSummary.enqueued,
+            deduplicatedJobs: fallbackSummary.deduplicatedJobs,
+            failed: fallbackSummary.failed,
+          }
+        } catch (fallbackErr) {
+          console.warn('Non-blocking periodic review fallback sync error:', fallbackErr)
+        }
+      }
     }
 
     if (runId) {
@@ -1170,6 +1245,8 @@ export async function runScheduledReplyWorker(
             deferred: summary.deferred,
             deadLettered: summary.deadLettered,
             healthProbesRun: summary.healthProbesRun,
+            notificationReconciliationsRun: summary.notificationReconciliationsRun ?? 0,
+            fallbackReviewSync: summary.fallbackReviewSync ?? null,
           } as Json,
         })
         .eq('id', runId)

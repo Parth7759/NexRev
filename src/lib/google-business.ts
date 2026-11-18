@@ -27,15 +27,36 @@ export interface GoogleReviewData {
   rating: number
   content: string
   reviewDate: string
+  createTime?: string | null
+  updateTime?: string | null
   reply?: {
     comment: string
     updateTime?: string
   }
 }
 
+export interface FetchGoogleReviewsOptions {
+  maxPages?: number
+  pageSize?: number
+  /**
+   * Optional UTC ISO lower bound. Because Google returns reviews ordered by
+   * `updateTime desc`, pagination stops early once a page reaches reviews
+   * strictly older than `stopBeforeIso`.
+   */
+  stopBeforeIso?: string | null
+  /**
+   * When true alongside `stopBeforeIso`, omits reviews strictly older than
+   * `stopBeforeIso` from the returned array.
+   */
+  filterToLookback?: boolean
+}
+
 export interface GoogleReviewsResult {
   supported: boolean
   reviews: GoogleReviewData[]
+  pagesFetched?: number
+  truncatedByLookback?: boolean
+  truncatedByMaxPages?: boolean
   message?: string
   errorCode?: 'INVALID_GRANT' | 'NETWORK_ERROR' | 'QUOTA_EXCEEDED' | 'PERMISSION_DENIED' | 'API_DISABLED' | 'SERVER_MISCONFIGURED' | 'UNKNOWN'
 }
@@ -406,7 +427,8 @@ function parseStarRating(ratingStr?: string): number {
 export async function fetchGoogleReviews(
   accessToken: string,
   accountName: string,
-  locationName: string
+  locationName: string,
+  options?: FetchGoogleReviewsOptions
 ): Promise<GoogleReviewsResult> {
   try {
     // In Business Information API v1, locationName is formatted as 'locations/{locationId}'.
@@ -420,7 +442,12 @@ export async function fetchGoogleReviews(
 
     let pageToken: string | undefined = undefined
     let pageCount = 0
-    const maxPages = 10 // Safety limit up to 500 reviews
+    const maxPages = Math.max(1, Math.min(20, Math.floor(options?.maxPages ?? 10)))
+    const pageSize = Math.max(1, Math.min(50, Math.floor(options?.pageSize ?? 50)))
+    const stopBeforeMs = options?.stopBeforeIso ? Date.parse(options.stopBeforeIso) : NaN
+    const hasLookbackCutoff = Number.isFinite(stopBeforeMs)
+    const filterToLookback = Boolean(options?.filterToLookback && hasLookbackCutoff)
+    let reachedLookbackCutoff = false
 
     interface RawReview {
       name?: string
@@ -445,7 +472,7 @@ export async function fetchGoogleReviews(
       const url = new URL(
         `https://mybusiness.googleapis.com/v4/${normalizedAccount}/${normalizedLocation}/reviews`
       )
-      url.searchParams.set('pageSize', '50')
+      url.searchParams.set('pageSize', String(pageSize))
       url.searchParams.set('orderBy', 'updateTime desc')
       if (pageToken) {
         url.searchParams.set('pageToken', pageToken)
@@ -468,6 +495,7 @@ export async function fetchGoogleReviews(
           return {
             supported: false,
             reviews,
+            pagesFetched: pageCount,
             message: 'Google authorization expired during reviews fetch. Please reconnect your account.',
             errorCode: 'INVALID_GRANT',
           }
@@ -477,6 +505,7 @@ export async function fetchGoogleReviews(
           return {
             supported: false,
             reviews,
+            pagesFetched: pageCount,
             message: 'Google Business Profile API rate limit exceeded. Please wait a few minutes before syncing again.',
             errorCode: 'QUOTA_EXCEEDED',
           }
@@ -487,6 +516,7 @@ export async function fetchGoogleReviews(
           return {
             supported: false,
             reviews,
+            pagesFetched: pageCount,
             message: isApiDisabled
               ? `Google My Business API is not enabled on Google Cloud project 248443327820. Please enable it in the Google Cloud Console.`
               : `Google Business Profile permission error: Access was denied (${message}). Ensure your account has manager or owner access to this location.`,
@@ -497,10 +527,13 @@ export async function fetchGoogleReviews(
         return {
           supported: false,
           reviews,
+          pagesFetched: pageCount,
           message: `Reviews fetch returned status ${res.status}: ${message}`,
           errorCode: 'UNKNOWN',
         }
       }
+
+      pageCount++
 
       if (body?.reviews && Array.isArray(body.reviews)) {
         for (const r of body.reviews as RawReview[]) {
@@ -508,13 +541,29 @@ export async function fetchGoogleReviews(
             r.reviewId || (r.name ? r.name.split('/reviews/').pop() : '') || ''
           if (!resolvedReviewId) continue
 
+          const reviewCreateTime = r.createTime || null
+          const reviewUpdateTime = r.updateTime || null
+          const effectiveDate = reviewUpdateTime || reviewCreateTime || new Date().toISOString()
+
+          if (hasLookbackCutoff) {
+            const updateMs = Date.parse(reviewUpdateTime || reviewCreateTime || '')
+            if (Number.isFinite(updateMs) && updateMs < stopBeforeMs) {
+              reachedLookbackCutoff = true
+              if (filterToLookback) {
+                continue
+              }
+            }
+          }
+
           reviews.push({
             reviewId: resolvedReviewId,
             authorName: r.reviewer?.displayName || 'Google Customer',
             authorPhotoUrl: r.reviewer?.profilePhotoUrl || null,
             rating: parseStarRating(r.starRating),
             content: r.comment || '',
-            reviewDate: r.updateTime || r.createTime || new Date().toISOString(),
+            reviewDate: effectiveDate,
+            createTime: reviewCreateTime,
+            updateTime: reviewUpdateTime,
             reply: r.reviewReply?.comment
               ? {
                   comment: r.reviewReply.comment,
@@ -526,12 +575,19 @@ export async function fetchGoogleReviews(
       }
 
       pageToken = body?.nextPageToken
-      pageCount++
+      if (reachedLookbackCutoff) {
+        break
+      }
     } while (pageToken && pageCount < maxPages)
+
+    const truncatedByMaxPages = Boolean(pageToken && !reachedLookbackCutoff && pageCount >= maxPages)
 
     return {
       supported: true,
       reviews,
+      pagesFetched: pageCount,
+      truncatedByLookback: reachedLookbackCutoff,
+      truncatedByMaxPages,
       message: `Successfully fetched ${reviews.length} reviews from Google.`,
     }
   } catch (err: unknown) {
@@ -539,6 +595,7 @@ export async function fetchGoogleReviews(
     return {
       supported: false,
       reviews: [],
+      pagesFetched: 0,
       message: `Failed to connect to Google Reviews API: ${msg}. Please check your network connection and try again.`,
       errorCode: 'NETWORK_ERROR',
     }
