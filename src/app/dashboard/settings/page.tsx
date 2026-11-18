@@ -609,9 +609,12 @@ export default function SettingsPage() {
                       value={businessContext}
                       onChange={(e) => setBusinessContext(e.target.value)}
                       disabled={!isAuthorized}
-                      placeholder="e.g. Downtown Dental, family practice open since 2012"
+                      placeholder="e.g. Family-owned dental clinic specializing in pediatric care since 2012"
                       className="text-xs"
                     />
+                    <p className="text-[11px] text-slate-500">
+                      Your connected Google Business Profile name is used automatically. Add optional services, hours, or brand voice notes here.
+                    </p>
                   </div>
                 </div>
 

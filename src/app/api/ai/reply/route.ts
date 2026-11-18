@@ -62,14 +62,29 @@ export async function POST(request: NextRequest) {
     const validTones: ReplyTone[] = ['professional', 'friendly', 'concise', 'empathetic']
     const selectedTone: ReplyTone = validTones.includes(tone) ? tone : 'professional'
 
-    const settings = await getWorkspaceReplySettings(supabase, workspaceId)
+    const [settings, workspaceRes, connectedLocRes] = await Promise.all([
+      getWorkspaceReplySettings(supabase, workspaceId),
+      supabase.from('workspaces').select('name').eq('id', workspaceId).maybeSingle(),
+      supabase
+        .from('locations')
+        .select('name')
+        .eq('workspace_id', workspaceId)
+        .eq('is_connected', true)
+        .limit(1)
+        .maybeSingle(),
+    ])
+
+    const resolvedLocationName =
+      (typeof locationName === 'string' && locationName.trim()) ||
+      connectedLocRes.data?.name ||
+      undefined
 
     const result = await generateReviewReply({
       authorName,
       rating: numericRating,
       reviewContent: content,
-      locationName,
-      businessName: locationName || settings.businessContext || 'our business',
+      locationName: resolvedLocationName,
+      workspaceName: workspaceRes.data?.name || undefined,
       businessContext: settings.businessContext || undefined,
       tone: selectedTone,
     })

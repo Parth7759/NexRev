@@ -82,8 +82,10 @@ export async function generateAiReplyAction(params: GenerateReplyActionParams) {
     }
   }
 
-  // Retrieve workspace settings for custom business context if workspaceId is provided
+  // Retrieve workspace settings, workspace name, and authoritative connected location name
   let businessContext = ''
+  let resolvedLocationName = params.locationName?.trim() || undefined
+  let resolvedWorkspaceName: string | undefined
   if (params.workspaceId && user) {
     const membership = await verifyWorkspaceMembership(supabase, params.workspaceId)
     if (!membership.isMember) {
@@ -92,8 +94,12 @@ export async function generateAiReplyAction(params: GenerateReplyActionParams) {
         error: membership.error || 'Unauthorized: You are not authorized for this workspace.',
       }
     }
-    const settings = await getWorkspaceReplySettings(supabase, params.workspaceId)
+    const [settings, workspaceRes] = await Promise.all([
+      getWorkspaceReplySettings(supabase, params.workspaceId),
+      supabase.from('workspaces').select('name').eq('id', params.workspaceId).maybeSingle(),
+    ])
     businessContext = settings.businessContext
+    resolvedWorkspaceName = workspaceRes.data?.name || undefined
 
     // For live reviews, enforce strict profile selection isolation
     if (params.reviewId && !params.reviewId.startsWith('demo-')) {
@@ -110,7 +116,7 @@ export async function generateAiReplyAction(params: GenerateReplyActionParams) {
 
         const { data: wsLocs } = await supabase
           .from('locations')
-          .select('id')
+          .select('id, name')
           .eq('workspace_id', params.workspaceId)
           .eq('is_connected', true)
 
@@ -134,6 +140,10 @@ export async function generateAiReplyAction(params: GenerateReplyActionParams) {
             error: 'AI generation blocked: This review belongs to an unselected business profile. Only the selected profile can be processed.',
           }
         }
+
+        if (wsLocs[0].name) {
+          resolvedLocationName = wsLocs[0].name
+        }
       }
     }
   }
@@ -143,8 +153,8 @@ export async function generateAiReplyAction(params: GenerateReplyActionParams) {
     authorName: params.authorName,
     rating: params.rating,
     reviewContent: params.reviewContent?.trim() || '',
-    locationName: params.locationName,
-    businessName: params.locationName || businessContext || 'our business',
+    locationName: resolvedLocationName,
+    workspaceName: resolvedWorkspaceName,
     businessContext: businessContext || undefined,
     tone: params.tone,
   })

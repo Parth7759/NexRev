@@ -175,21 +175,25 @@ export async function autoProcessSingleReview(
     }
   }
 
-  // 4. Fetch workspace settings
-  const settings = await getWorkspaceReplySettings(supabase, workspaceId)
+  // 4. Fetch workspace settings and workspace name for dynamic per-workspace/location identity
+  const [settings, workspaceRes] = await Promise.all([
+    getWorkspaceReplySettings(supabase, workspaceId),
+    supabase.from('workspaces').select('name').eq('id', workspaceId).maybeSingle(),
+  ])
   const selectedTone = params.tone || settings.defaultReplyTone || 'professional'
   const locData = Array.isArray(targetReview.locations)
     ? targetReview.locations[0]
     : targetReview.locations
-  const locationName = locData?.name || undefined
+  const locationName = locData?.name || activeSelectedLoc.name || undefined
+  const workspaceName = workspaceRes.data?.name || undefined
 
-  // 4. Generate AI Reply for review (1-5 stars are never skipped)
+  // 4b. Generate AI Reply for review (1-5 stars are never skipped)
   const aiResult = await generateReviewReply({
     authorName: targetReview.author_name,
     rating: targetReview.rating,
     reviewContent: targetReview.content || '',
     locationName,
-    businessName: locationName || settings.businessContext || 'our business',
+    workspaceName,
     businessContext: settings.businessContext || undefined,
     tone: selectedTone,
   })
@@ -210,8 +214,8 @@ export async function autoProcessSingleReview(
     }
   }
 
-  // 5. Evaluate approval policy
-  const policy = evaluateReplyApprovalPolicy(targetReview.rating, settings)
+  // 5. Evaluate approval policy (including 1-3 star safety gate and sensitive content detection)
+  const policy = evaluateReplyApprovalPolicy(targetReview.rating, settings, targetReview.content)
 
   // 6. Handle Draft Saving (when approval required OR dryRun mode)
   if (policy.requiresApproval || dryRun) {

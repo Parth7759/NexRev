@@ -156,16 +156,75 @@ export async function getWorkspaceReplySettings(
   }
 }
 
+export interface SensitiveReviewCheck {
+  isSensitive: boolean
+  category?: 'legal_threat' | 'fraud_or_billing' | 'health_or_safety' | 'harassment_or_discrimination' | 'privacy_or_compliance'
+  matchedTerm?: string
+}
+
+const SENSITIVE_CONTENT_RULES: Array<{
+  category: NonNullable<SensitiveReviewCheck['category']>
+  pattern: RegExp
+}> = [
+  {
+    category: 'legal_threat',
+    pattern: /\b(lawsuit|lawyer|attorney|legal\s+action|sue\s+you|suing|court\s+case|consumer\s+court)\b/i,
+  },
+  {
+    category: 'fraud_or_billing',
+    pattern: /\b(scam|scammer|scammers|fraud|fraudulent|ripped\s+off|stolen|theft|unauthorized\s+charge|chargeback)\b/i,
+  },
+  {
+    category: 'health_or_safety',
+    pattern: /\b(food\s+poisoning|allergic\s+reaction|hospitalized|health\s+inspector|injured|injury|contaminated|cockroach|rat\s+droppings)\b/i,
+  },
+  {
+    category: 'harassment_or_discrimination',
+    pattern: /\b(harass(?:ed|ment|ing)?|discriminat(?:ed|ion|ory)|racis[mt]|sexis[mt]|assault(?:ed)?|police\s+report|called\s+the\s+police)\b/i,
+  },
+  {
+    category: 'privacy_or_compliance',
+    pattern: /\b(data\s+breach|leaked\s+my\s+data|privacy\s+violation|hipaa|gdpr\s+violation)\b/i,
+  },
+]
+
+/**
+ * Detects high-risk or sensitive review content (legal threats, safety/health incidents,
+ * fraud/scam accusations, harassment/discrimination, or privacy/compliance issues) that
+ * should always be routed to manual human approval even on 4-5 star ratings.
+ */
+export function detectSensitiveReviewContent(
+  reviewContent?: string | null
+): SensitiveReviewCheck {
+  const text = (reviewContent || '').trim()
+  if (!text) return { isSensitive: false }
+
+  for (const rule of SENSITIVE_CONTENT_RULES) {
+    const match = text.match(rule.pattern)
+    if (match) {
+      return {
+        isSensitive: true,
+        category: rule.category,
+        matchedTerm: match[0],
+      }
+    }
+  }
+
+  return { isSensitive: false }
+}
+
 /**
  * Determines whether a review reply may be automatically published or must require manual human review.
  */
 export function evaluateReplyApprovalPolicy(
   rating: number,
-  settings: WorkspaceReplySettings
+  settings: WorkspaceReplySettings,
+  reviewContent?: string | null
 ): {
   requiresApproval: boolean
   status: 'draft' | 'published'
   reason: string
+  sensitiveCategory?: SensitiveReviewCheck['category']
 } {
   // Rule 1: Manual Approval mode requires human review for ALL reviews
   if (settings.autoReplyMode === 'manual_approval') {
@@ -173,6 +232,17 @@ export function evaluateReplyApprovalPolicy(
       requiresApproval: true,
       status: 'draft',
       reason: 'Workspace is configured for manual approval of all AI replies.',
+    }
+  }
+
+  // Rule 1b: Sensitive / high-risk review content ALWAYS requires human approval regardless of star rating
+  const sensitiveCheck = detectSensitiveReviewContent(reviewContent)
+  if (sensitiveCheck.isSensitive) {
+    return {
+      requiresApproval: true,
+      status: 'draft',
+      reason: `Sensitive review content detected (${sensitiveCheck.category}): requires manual human review and approval.`,
+      sensitiveCategory: sensitiveCheck.category,
     }
   }
 

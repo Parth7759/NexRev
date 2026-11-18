@@ -1,3 +1,5 @@
+import { resolveBusinessIdentity, ResolvedBusinessIdentity } from './business-identity'
+
 export type ReplyTone = 'professional' | 'friendly' | 'concise' | 'empathetic'
 
 export interface GenerateReplyInput {
@@ -6,6 +8,7 @@ export interface GenerateReplyInput {
   reviewContent?: string | null
   locationName?: string
   businessName?: string
+  workspaceName?: string
   businessContext?: string
   tone: ReplyTone
 }
@@ -71,7 +74,13 @@ export function generateRuleBasedReply(input: GenerateReplyInput): string {
   const rating = Math.max(1, Math.min(5, Math.round(input.rating || 5)))
   const content = (input.reviewContent || '').trim()
   const lowerContent = content.toLowerCase()
-  const business = input.businessName?.trim() || input.businessContext?.trim() || 'our business'
+  const identity = resolveBusinessIdentity({
+    locationName: input.locationName,
+    businessName: input.businessName,
+    workspaceName: input.workspaceName,
+    businessContext: input.businessContext,
+  })
+  const business = identity.businessName
   const lang = detectReviewLanguage(content)
 
   // Empty review check: when customer leaves only a star rating without written text
@@ -297,23 +306,31 @@ export function generateRuleBasedReply(input: GenerateReplyInput): string {
   return `${greeting}thank you so much for taking the time to share your 5-star experience with us. We are thrilled to hear your kind words about ${positiveTopic}. Your feedback means a great deal to our entire team at ${business}, and we look forward to seeing you again soon!`
 }
 
+export interface BuiltReplyPrompts {
+  systemPrompt: string
+  userMessage: string
+  identity: ResolvedBusinessIdentity
+  rating: number
+  tone: ReplyTone
+}
+
 /**
- * Server-side AI Reply Generation Service.
- * Uses OPENAI_API_KEY from server environment variables when available,
- * and seamlessly provides intelligent rule-based generation when the external provider
- * quota is exhausted or offline.
- *
- * Enforces mandatory behavior:
- * - Generates a personalized reply for EVERY rating (1, 2, 3, 4, 5).
- * - Never skips or blocks replies for low ratings.
- * - Adheres strictly to review-specific rules, factual safety, language matching, and tone.
+ * Pure helper that resolves dynamic per-workspace/location identity and constructs
+ * the exact OpenAI system and user prompts for review reply generation.
  */
-export async function generateReviewReply(input: GenerateReplyInput): Promise<GenerateReplyResult> {
+export function buildReviewReplyPrompts(input: GenerateReplyInput): BuiltReplyPrompts {
   const rating = Math.max(1, Math.min(5, Math.round(input.rating || 5)))
   const reviewContent = (input.reviewContent || '').trim()
 
   const validTones: ReplyTone[] = ['professional', 'friendly', 'concise', 'empathetic']
   const tone = validTones.includes(input.tone) ? input.tone : 'professional'
+
+  const identity = resolveBusinessIdentity({
+    locationName: input.locationName,
+    businessName: input.businessName,
+    workspaceName: input.workspaceName,
+    businessContext: input.businessContext,
+  })
 
   const toneInstructions: Record<ReplyTone, string> = {
     professional: 'Maintain a polished, respectful, and courteous tone. Thank the customer for their patronage and feedback.',
@@ -330,9 +347,24 @@ export async function generateReviewReply(input: GenerateReplyInput): Promise<Ge
     5: '5-STAR REVIEW RULES:\n- Enthusiastically thank the customer for the glowing 5-star rating.\n- Personalize the response by explicitly referencing specific dishes, products, staff members, or amenities highlighted in their review.\n- Express genuine gratitude and excitement to welcome them back.',
   }
 
-  const businessDescription = input.businessContext ? `\nBusiness Context & Description: ${input.businessContext}` : ''
+  const businessDescription = identity.businessContext
+    ? `\nSupplemental Business Context (services, voice, specialties — NEVER overrides the official business name): ${identity.businessContext}`
+    : ''
 
-  const systemPrompt = `You are a professional reputation management assistant representing "${input.businessName || 'our business'}"${input.locationName ? ` at our ${input.locationName} location` : ''}.${businessDescription}
+  const brandIdentityRule = identity.hasExplicitBusinessName
+    ? `- Always represent ONLY "${identity.businessName}" as the business responding to this review.
+   - If you mention the business name in the reply, use "${identity.businessName}" (or a natural shortened form of it).${
+     identity.isPlatformNamedBusiness
+       ? ''
+       : '\n   - NEVER refer to "NexRep" or any software/reputation platform name, and NEVER let supplemental context replace the official business name.'
+   }`
+    : `- Speak naturally as "our team" or "us" without inventing a business name.${
+        identity.isPlatformNamedBusiness
+          ? ''
+          : '\n   - NEVER refer to "NexRep" or any third-party software platform name.'
+      }`
+
+  const systemPrompt = `You are a professional reputation management assistant representing "${identity.businessName}"${identity.branchLabel ? ` (${identity.branchLabel} location)` : ''}.${businessDescription}
 Your job is to compose a thoughtful, personalized, human-sounding public reply to a customer review on Google Business Profile.
 
 Tone: ${tone.toUpperCase()} - ${toneInstructions[tone]}
@@ -340,43 +372,71 @@ Tone: ${tone.toUpperCase()} - ${toneInstructions[tone]}
 ${ratingSpecificGuidance[rating]}
 
 MANDATORY RULES FOR ALL REPLIES:
-1. SPECIFIC DETAIL CITATION (NO GENERIC REPLIES):
+1. BRAND IDENTITY (STRICT):
+   ${brandIdentityRule}
+2. SPECIFIC DETAIL CITATION (NO GENERIC REPLIES):
    - Carefully read the actual review text. Explicitly acknowledge the specific items, dishes, team members, wait times, or experiences mentioned by the reviewer.
    - Weave in the business context or specialties when naturally relevant to the customer's feedback.
    - Do NOT use generic, cookie-cutter templates.
-2. MIXED / NEUTRAL REVIEWS:
+3. MIXED / NEUTRAL REVIEWS:
    - If a customer mentions both positives and negatives (e.g., "Food was good but service was slow"), specifically address BOTH: praise their positive remarks and constructively acknowledge the critique.
-3. NEGATIVE REVIEWS & SERIOUS COMPLAINTS (1-2 STARS):
+4. NEGATIVE REVIEWS & SERIOUS COMPLAINTS (1-2 STARS):
    - Acknowledge the exact complaint empathetically and apologize sincerely where appropriate.
    - Offer a constructive next step: invite them to contact management directly so we can assist them.
    - NEVER argue, never dispute the customer's account, and never claim an investigation has concluded.
-4. FACTUAL INTEGRITY & SAFETY:
+5. FACTUAL INTEGRITY & SAFETY:
    - NEVER invent facts, policies, or past interactions.
    - NEVER offer or promise monetary compensation, refunds, discounts, or free items.
    - NEVER promise specific disciplinary action or claim someone was penalized.
-5. EMPTY REVIEW TEXT (RATING-ONLY):
+6. EMPTY REVIEW TEXT (RATING-ONLY):
    - If no review content was provided (only a star rating), write a brief, natural response (1-2 sentences) directly acknowledging the ${rating}-star rating.
    - DO NOT invent or assume any menu items, staff, or specific experiences.
    - For 4-5 stars: Warmly thank them for the rating.
    - For 1-3 stars: Thank them for rating us, express regret that their visit did not meet expectations, and invite them to reach out if they'd like to share details.
-6. LANGUAGE MATCHING:
+7. LANGUAGE MATCHING:
    - Automatically reply in the same language as the customer's review (e.g. Spanish for Spanish reviews, French for French, German for German, Hindi/Hinglish for Hindi, etc.).
    - Default to English if the review is in English or empty.
-7. NATURAL, CONCISE & VARIED:
+8. NATURAL, CONCISE & VARIED:
    - Keep the reply between 2 to 4 sentences (or 1-2 sentences for concise tone or empty reviews).
    - Avoid tired cliches like "We strive for excellence". Sound like a genuine, caring business owner.
-8. OUTPUT FORMAT:
+9. OUTPUT FORMAT:
    - Output ONLY the final response text.
    - DO NOT include quotes around the text, email/phone placeholders, or signatures like "[Your Name]".`
 
-  const userMessage = `Customer Name: ${input.authorName || 'Valued Customer'}
-Rating: ${rating} / 5 stars
-${input.locationName ? `Location: ${input.locationName}` : ''}
-${input.businessContext ? `Business Context: ${input.businessContext}` : ''}
-Review Content:
-"""
-${reviewContent || '(Star rating provided without written comment)'}
-"""`
+  const userMessageLines = [
+    `Business Name: ${identity.businessName}`,
+    identity.branchLabel ? `Location / Branch: ${identity.branchLabel}` : null,
+    `Customer Name: ${input.authorName || 'Valued Customer'}`,
+    `Rating: ${rating} / 5 stars`,
+    identity.businessContext ? `Supplemental Business Context: ${identity.businessContext}` : null,
+    'Review Content:',
+    '"""',
+    reviewContent || '(Star rating provided without written comment)',
+    '"""',
+  ].filter((line): line is string => line !== null)
+
+  return {
+    systemPrompt,
+    userMessage: userMessageLines.join('\n'),
+    identity,
+    rating,
+    tone,
+  }
+}
+
+/**
+ * Server-side AI Reply Generation Service.
+ * Uses OPENAI_API_KEY from server environment variables when available,
+ * and seamlessly provides intelligent rule-based generation when the external provider
+ * quota is exhausted or offline.
+ *
+ * Enforces mandatory behavior:
+ * - Generates a personalized reply for EVERY rating (1, 2, 3, 4, 5).
+ * - Never skips or blocks replies for low ratings.
+ * - Adheres strictly to review-specific rules, factual safety, language matching, and tone.
+ */
+export async function generateReviewReply(input: GenerateReplyInput): Promise<GenerateReplyResult> {
+  const { systemPrompt, userMessage } = buildReviewReplyPrompts(input)
 
   const apiKey = process.env.OPENAI_API_KEY
   const model = process.env.OPENAI_MODEL || 'gpt-4o-mini'

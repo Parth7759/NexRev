@@ -1,5 +1,25 @@
 import crypto from 'crypto'
 
+export interface TokenEncryptionReadiness {
+  dedicatedKeyConfigured: boolean
+  keyLength: number
+  usingFallback: boolean
+}
+
+/**
+ * Read-only readiness check for production OAuth token encryption hygiene.
+ * Never exposes secret values and does not alter existing decryption behavior.
+ */
+export function getTokenEncryptionReadiness(): TokenEncryptionReadiness {
+  const dedicatedKey = (process.env.TOKEN_ENCRYPTION_KEY || '').trim()
+  const dedicatedKeyConfigured = dedicatedKey.length >= 32
+  return {
+    dedicatedKeyConfigured,
+    keyLength: dedicatedKey.length,
+    usingFallback: !dedicatedKey,
+  }
+}
+
 /**
  * Derives a 32-byte encryption key for AES-256-GCM.
  * Prioritizes TOKEN_ENCRYPTION_KEY, with fallback derivation from server secrets.

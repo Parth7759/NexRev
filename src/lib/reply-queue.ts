@@ -1075,6 +1075,37 @@ export async function runScheduledReplyWorker(
         }
       } catch (jobErr: unknown) {
         const msg = jobErr instanceof Error ? jobErr.message : 'Unexpected job execution error'
+        const errNowIso = new Date().toISOString()
+        const isExhausted = job.attempts >= job.max_attempts
+        const nextStatus = isExhausted ? 'dead_letter' : 'failed'
+
+        try {
+          await supabase
+            .from('review_reply_jobs')
+            .update({
+              status: nextStatus,
+              locked_at: null,
+              locked_by: null,
+              next_retry_at: isExhausted ? null : computeNextRetryAt(job.attempts, nowMs),
+              processed_at: isExhausted ? errNowIso : null,
+              last_error: msg,
+              updated_at: errNowIso,
+            })
+            .eq('id', job.id)
+
+          await syncEventStatusForJob(supabase, job, {
+            processingStatus: 'failed',
+            publishingStatus: 'failed',
+            errorMessage: msg,
+            metadata: { jobId: job.id, unexpectedError: true, deadLetter: isExhausted },
+          })
+        } catch (cleanupErr) {
+          console.warn('Failed to release lock after unexpected job error:', job.id, cleanupErr)
+        }
+
+        if (isExhausted) {
+          summary.deadLettered++
+        }
         summary.failed++
         summary.errors.push({ jobId: job.id, reviewId: job.review_id, error: msg })
       }

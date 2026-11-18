@@ -53,9 +53,26 @@ async function handleCronExecution(request: NextRequest) {
   // Parse parameters
   const dryRunParam = url.searchParams.get('dryRun')
   const isDryRun = dryRunParam === 'true' || dryRunParam === '1'
+  const allowLegacyDirectProcess =
+    url.searchParams.get('allowLegacyDirectProcess') === 'true' ||
+    url.searchParams.get('allowLegacyDirectProcess') === '1'
   const workspaceId = url.searchParams.get('workspaceId') || undefined
   const limitParam = url.searchParams.get('limit')
   const limit = limitParam ? Math.min(100, Math.max(1, parseInt(limitParam, 10))) : 25
+
+  // Safety guard: Prevent legacy daily cron from bypassing review_reply_jobs, auto_reply_delay_minutes,
+  // and duplicate/404 queue protections unless explicitly requested with dryRun=true or allowLegacyDirectProcess=true.
+  if (!isDryRun && !allowLegacyDirectProcess) {
+    return NextResponse.json(
+      {
+        success: false,
+        deprecated: true,
+        error:
+          'Legacy direct batch reply processing is disabled to protect the delayed reply queue (review_reply_jobs). Use POST /api/workers/process-scheduled-replies or pass dryRun=true.',
+      },
+      { status: 409 }
+    )
+  }
 
   // In production, background review processing requires SUPABASE_SERVICE_ROLE_KEY to bypass RLS
   if (process.env.NODE_ENV === 'production' && !isDryRun && (!process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY.trim() === '')) {
