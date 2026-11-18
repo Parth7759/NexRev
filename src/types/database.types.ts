@@ -720,6 +720,17 @@ export interface Database {
         }
         Returns: Database['public']['Tables']['review_reply_jobs']['Row'][]
       }
+      upsert_worker_scheduler_vault_config: {
+        Args: {
+          p_worker_url: string
+          p_worker_secret: string
+        }
+        Returns: Json
+      }
+      get_staging_cron_diagnostics: {
+        Args: Record<PropertyKey, never>
+        Returns: Json
+      }
     }
     Enums: {
       [_ in never]: never

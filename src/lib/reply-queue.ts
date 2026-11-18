@@ -47,7 +47,7 @@ export interface WorkerAuthResult {
   authenticated: boolean
   status?: number
   error?: string
-  triggerSource?: 'cloud_scheduler_oidc' | 'bearer_cron_secret'
+  triggerSource?: 'cloud_scheduler_oidc' | 'supabase_cron' | 'bearer_worker_secret' | 'bearer_cron_secret'
   serviceAccount?: string
 }
 
@@ -151,10 +151,15 @@ function timingSafeEqualString(a: string, b: string): boolean {
  *
  * Security rules:
  * - Never accepts secrets in URL query parameters.
- * - When GOOGLE_SCHEDULER_WORKER_AUDIENCE or GOOGLE_SCHEDULER_WORKER_SERVICE_ACCOUNT is configured,
- *   STRICTLY requires a valid Google-signed OIDC Bearer JWT matching that dedicated audience and service account.
- *   (Pub/Sub tokens from pubsub-invoker are rejected with HTTP 401.)
- * - Only falls back to Authorization: Bearer <CRON_SECRET> when OIDC worker env vars are unset.
+ * - Never permits SUPABASE_SERVICE_ROLE_KEY as the worker secret.
+ * - Supports Google Cloud Scheduler OIDC Bearer JWT (GOOGLE_SCHEDULER_WORKER_AUDIENCE +
+ *   GOOGLE_SCHEDULER_WORKER_SERVICE_ACCOUNT) without any weakening: Pub/Sub tokens and wrong
+ *   audiences/service accounts are strictly rejected with HTTP 401.
+ * - Supports a dedicated high-entropy (>=32 chars) WORKER_SCHEDULER_SECRET verified via
+ *   constant-time comparison (for Supabase pg_cron + pg_net via Vault), recording
+ *   triggerSource='supabase_cron' when x-nexrep-scheduler-source='supabase_cron'.
+ * - Falls back to Authorization: Bearer <CRON_SECRET> only when neither OIDC nor
+ *   WORKER_SCHEDULER_SECRET is configured.
  */
 export async function authenticateSchedulerWorkerRequest(
   request: NextRequest,
@@ -171,58 +176,114 @@ export async function authenticateSchedulerWorkerRequest(
 
   const workerAudience = process.env.GOOGLE_SCHEDULER_WORKER_AUDIENCE?.trim() || ''
   const workerServiceAccount = process.env.GOOGLE_SCHEDULER_WORKER_SERVICE_ACCOUNT?.trim() || ''
-  const oidcRequired = Boolean(workerAudience || workerServiceAccount)
+  const oidcConfigured = Boolean(workerAudience || workerServiceAccount)
+
+  const workerSecret = process.env.WORKER_SCHEDULER_SECRET?.trim() || ''
+  const workerSecretConfigured = Boolean(workerSecret)
+
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() || ''
+  if (workerSecretConfigured && serviceRoleKey && timingSafeEqualString(workerSecret, serviceRoleKey)) {
+    return {
+      authenticated: false,
+      status: 500,
+      error:
+        'Server misconfiguration: WORKER_SCHEDULER_SECRET must never match SUPABASE_SERVICE_ROLE_KEY.',
+    }
+  }
+
+  if (workerSecretConfigured && workerSecret.length < 32) {
+    return {
+      authenticated: false,
+      status: 500,
+      error:
+        'Server misconfiguration: WORKER_SCHEDULER_SECRET must be at least 32 characters long.',
+    }
+  }
 
   const authHeader = request.headers.get('authorization') || ''
   const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : ''
+  const schedulerSourceHeader = (request.headers.get('x-nexrep-scheduler-source') || '')
+    .trim()
+    .toLowerCase()
 
-  if (oidcRequired) {
-    if (!workerAudience || !workerServiceAccount) {
-      return {
-        authenticated: false,
-        status: 500,
-        error:
-          'Server misconfiguration: Both GOOGLE_SCHEDULER_WORKER_AUDIENCE and GOOGLE_SCHEDULER_WORKER_SERVICE_ACCOUNT must be configured.',
-      }
+  // Explicitly reject SUPABASE_SERVICE_ROLE_KEY even if supplied by a caller
+  if (bearerToken && serviceRoleKey && timingSafeEqualString(bearerToken, serviceRoleKey)) {
+    return {
+      authenticated: false,
+      status: 401,
+      error: 'Unauthorized: Supabase service role key is not accepted as a worker credential.',
     }
+  }
 
+  if (oidcConfigured && (!workerAudience || !workerServiceAccount)) {
+    return {
+      authenticated: false,
+      status: 500,
+      error:
+        'Server misconfiguration: Both GOOGLE_SCHEDULER_WORKER_AUDIENCE and GOOGLE_SCHEDULER_WORKER_SERVICE_ACCOUNT must be configured.',
+    }
+  }
+
+  if (oidcConfigured || workerSecretConfigured) {
     if (!bearerToken) {
       return {
         authenticated: false,
         status: 401,
-        error: 'Unauthorized: Missing required Google Cloud Scheduler OIDC Bearer token.',
+        error: oidcConfigured
+          ? 'Unauthorized: Missing required Google Cloud Scheduler OIDC or worker Bearer token.'
+          : 'Unauthorized: Missing required worker Bearer token.',
       }
     }
 
-    const oidcResult = await verifyGooglePubSubOidcToken(bearerToken, {
-      audience: workerAudience,
-      expectedServiceAccount: workerServiceAccount,
-      keyResolver: options?.keyResolver,
-    })
+    const looksLikeJwt = bearerToken.split('.').length === 3
 
-    if (!oidcResult.valid) {
+    // 1. If OIDC is configured and token is a JWT (or workerSecret is not configured), enforce strict OIDC verification
+    if (oidcConfigured && (looksLikeJwt || !workerSecretConfigured)) {
+      const oidcResult = await verifyGooglePubSubOidcToken(bearerToken, {
+        audience: workerAudience,
+        expectedServiceAccount: workerServiceAccount,
+        keyResolver: options?.keyResolver,
+      })
+
+      if (!oidcResult.valid) {
+        return {
+          authenticated: false,
+          status: 401,
+          error: `Unauthorized: Invalid worker OIDC token (${oidcResult.error || 'verification failed'})`,
+        }
+      }
+
       return {
-        authenticated: false,
-        status: 401,
-        error: `Unauthorized: Invalid worker OIDC token (${oidcResult.error || 'verification failed'})`,
+        authenticated: true,
+        triggerSource: 'cloud_scheduler_oidc',
+        serviceAccount: oidcResult.claims?.email,
+      }
+    }
+
+    // 2. Dedicated static Bearer secret verification (never matches JWTs when OIDC is enabled)
+    if (workerSecretConfigured && !looksLikeJwt && timingSafeEqualString(bearerToken, workerSecret)) {
+      return {
+        authenticated: true,
+        triggerSource:
+          schedulerSourceHeader === 'supabase_cron' ? 'supabase_cron' : 'bearer_worker_secret',
       }
     }
 
     return {
-      authenticated: true,
-      triggerSource: 'cloud_scheduler_oidc',
-      serviceAccount: oidcResult.claims?.email,
+      authenticated: false,
+      status: 401,
+      error: 'Unauthorized: Invalid worker Bearer token.',
     }
   }
 
-  // Fallback when OIDC worker env vars are not set (e.g., local dev testing)
+  // Fallback only when neither OIDC nor dedicated WORKER_SCHEDULER_SECRET is configured
   const cronSecret = process.env.CRON_SECRET?.trim() || ''
   if (!cronSecret) {
     return {
       authenticated: false,
       status: 500,
       error:
-        'Server misconfiguration: Configure GOOGLE_SCHEDULER_WORKER_AUDIENCE/SERVICE_ACCOUNT or CRON_SECRET.',
+        'Server misconfiguration: Configure WORKER_SCHEDULER_SECRET, GOOGLE_SCHEDULER_WORKER_*, or CRON_SECRET.',
     }
   }
 
@@ -236,7 +297,8 @@ export async function authenticateSchedulerWorkerRequest(
 
   return {
     authenticated: true,
-    triggerSource: 'bearer_cron_secret',
+    triggerSource:
+      schedulerSourceHeader === 'supabase_cron' ? 'supabase_cron' : 'bearer_cron_secret',
   }
 }
 

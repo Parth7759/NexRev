@@ -190,6 +190,87 @@ async function runSuite() {
       'Accepts valid Google-signed OIDC JWT from dedicated scheduler-worker-staging SA',
       `Got: ${JSON.stringify(validRes)}`
     )
+
+    // 2.6 Dual-mode coexistence: dedicated WORKER_SCHEDULER_SECRET works for supabase_cron without weakening OIDC
+    const origWorkerSecret = process.env.WORKER_SCHEDULER_SECRET
+    const testHighEntropySecret = 'a'.repeat(64)
+    process.env.WORKER_SCHEDULER_SECRET = testHighEntropySecret
+    try {
+      const cronReq = new NextRequest(WORKER_AUD, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${testHighEntropySecret}`,
+          'x-nexrep-scheduler-source': 'supabase_cron',
+        },
+      })
+      const cronRes = await authenticateSchedulerWorkerRequest(cronReq, { keyResolver: publicKey })
+      assert(
+        cronRes.authenticated === true && cronRes.triggerSource === 'supabase_cron',
+        'Suite 2',
+        'Accepts dedicated WORKER_SCHEDULER_SECRET and records triggerSource=supabase_cron',
+        `Got: ${JSON.stringify(cronRes)}`
+      )
+
+      // 2.7 Pub/Sub JWT is STILL rejected even when WORKER_SCHEDULER_SECRET is also enabled
+      const pubsubStillRejected = await authenticateSchedulerWorkerRequest(pubsubReq, {
+        keyResolver: publicKey,
+      })
+      assert(
+        pubsubStillRejected.authenticated === false && pubsubStillRejected.status === 401,
+        'Suite 2',
+        'Pub/Sub JWT remains strictly rejected (401) when WORKER_SCHEDULER_SECRET is configured',
+        `Got: ${JSON.stringify(pubsubStillRejected)}`
+      )
+
+      // 2.8 Valid Cloud Scheduler OIDC JWT STILL passes with cloud_scheduler_oidc
+      const oidcStillPasses = await authenticateSchedulerWorkerRequest(validWorkerReq, {
+        keyResolver: publicKey,
+      })
+      assert(
+        oidcStillPasses.authenticated === true &&
+          oidcStillPasses.triggerSource === 'cloud_scheduler_oidc',
+        'Suite 2',
+        'Cloud Scheduler OIDC remains fully intact when WORKER_SCHEDULER_SECRET is configured',
+        `Got: ${JSON.stringify(oidcStillPasses)}`
+      )
+
+      // 2.9 Rejects wrong static Bearer secret with 401
+      const wrongSecretReq = new NextRequest(WORKER_AUD, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${'b'.repeat(64)}`,
+          'x-nexrep-scheduler-source': 'supabase_cron',
+        },
+      })
+      const wrongSecretRes = await authenticateSchedulerWorkerRequest(wrongSecretReq, {
+        keyResolver: publicKey,
+      })
+      assert(
+        wrongSecretRes.authenticated === false && wrongSecretRes.status === 401,
+        'Suite 2',
+        'Rejects mismatched static Bearer secret with HTTP 401',
+        `Got: ${JSON.stringify(wrongSecretRes)}`
+      )
+
+      // 2.10 Rejects SUPABASE_SERVICE_ROLE_KEY as worker credential (401 caller / 500 misconfig)
+      const srKey = process.env.SUPABASE_SERVICE_ROLE_KEY || 'mock-service-role-key-at-least-32-chars'
+      const srCallerReq = new NextRequest(WORKER_AUD, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${srKey}` },
+      })
+      const srCallerRes = await authenticateSchedulerWorkerRequest(srCallerReq, {
+        keyResolver: publicKey,
+      })
+      assert(
+        srCallerRes.authenticated === false && srCallerRes.status === 401,
+        'Suite 2',
+        'Explicitly rejects SUPABASE_SERVICE_ROLE_KEY sent as worker Bearer token (HTTP 401)',
+        `Got: ${JSON.stringify(srCallerRes)}`
+      )
+    } finally {
+      if (origWorkerSecret === undefined) delete process.env.WORKER_SCHEDULER_SECRET
+      else process.env.WORKER_SCHEDULER_SECRET = origWorkerSecret
+    }
   } finally {
     if (origAud === undefined) delete process.env.GOOGLE_SCHEDULER_WORKER_AUDIENCE
     else process.env.GOOGLE_SCHEDULER_WORKER_AUDIENCE = origAud
@@ -664,3 +745,4 @@ runSuite().catch((err) => {
   console.error(err)
   process.exit(1)
 })
+

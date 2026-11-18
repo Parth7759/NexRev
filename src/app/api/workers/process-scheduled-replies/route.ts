@@ -14,12 +14,16 @@ export async function GET() {
   const serviceAccountConfigured = Boolean(
     process.env.GOOGLE_SCHEDULER_WORKER_SERVICE_ACCOUNT?.trim()
   )
+  const workerSecretConfigured = Boolean(
+    process.env.WORKER_SCHEDULER_SECRET && process.env.WORKER_SCHEDULER_SECRET.trim().length >= 32
+  )
 
   return NextResponse.json({
     status: 'ok',
     service: 'NexRep Scheduled Review Reply Worker',
     authConfig: {
       oidcConfigured: audienceConfigured && serviceAccountConfigured,
+      workerSecretConfigured,
       audienceConfigured,
       serviceAccountConfigured,
     },
@@ -87,3 +91,4 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: false, error: message }, { status: 500 })
   }
 }
+
