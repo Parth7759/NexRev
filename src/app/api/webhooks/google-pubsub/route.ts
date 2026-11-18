@@ -8,6 +8,10 @@ import { autoProcessSingleReview } from '@/lib/reply-automation'
 import { logReplyAudit, TypedSupabaseClient } from '@/lib/reply-safety'
 import { Database } from '@/types/database.types'
 import { authenticateGooglePubSubWebhook } from '@/lib/google-pubsub-auth'
+import {
+  DecodedNotificationPayload,
+  parseGooglePubSubNotificationPayload,
+} from '@/lib/google-pubsub-payload'
 
 interface PubSubPushBody {
   message?: {
@@ -19,33 +23,6 @@ interface PubSubPushBody {
     publish_time?: string
   }
   subscription?: string
-}
-
-interface DecodedNotificationPayload {
-  eventType?: string
-  event_type?: string
-  review?: {
-    name?: string
-    reviewId?: string
-    starRating?: string
-    comment?: string
-    reviewer?: {
-      displayName?: string
-      profilePhotoUrl?: string
-    }
-    reviewReply?: {
-      comment?: string
-      updateTime?: string
-    }
-  }
-  resourceName?: string
-  resource_name?: string
-  name?: string
-  reviewName?: string
-  review_name?: string
-  accountId?: string
-  locationId?: string
-  reviewId?: string
 }
 
 /**
@@ -179,62 +156,42 @@ export async function POST(request: NextRequest) {
     )
   }
 
-  const eventType = (decodedPayload.eventType || decodedPayload.event_type || 'NEW_REVIEW').toUpperCase()
+  const parsed = parseGooglePubSubNotificationPayload(decodedPayload, body.message.attributes)
+  const { eventType, isReviewEvent, accountId, locationId, reviewId, rawResourceName, embeddedReview } =
+    parsed
 
   // Only handle review events (NEW_REVIEW or UPDATED_REVIEW)
-  if (eventType !== 'NEW_REVIEW' && eventType !== 'UPDATED_REVIEW') {
+  if (!isReviewEvent) {
     return NextResponse.json({
       success: true,
+      acknowledged: true,
       ignored: true,
       reason: `Ignored non-review event type: ${eventType}`,
     })
   }
 
-  // 4. Resolve Resource Name (accounts/{accountId}/locations/{locationId}/reviews/{reviewId})
-  const rawResourceName =
-    decodedPayload.review?.name ||
-    decodedPayload.resourceName ||
-    decodedPayload.resource_name ||
-    decodedPayload.name ||
-    decodedPayload.reviewName ||
-    decodedPayload.review_name ||
-    ''
-
-  let accountId = decodedPayload.accountId || ''
-  let locationId = decodedPayload.locationId || ''
-  let reviewId = decodedPayload.reviewId || decodedPayload.review?.reviewId || ''
-
-  if (rawResourceName) {
-    const clean = rawResourceName.replace(/^\/+/, '')
-    const match = clean.match(/(?:accounts\/)?([^/]+)\/(?:locations\/)?([^/]+)\/(?:reviews\/)?([^/]+)/)
-    if (match) {
-      accountId = accountId || match[1]
-      locationId = locationId || match[2]
-      reviewId = reviewId || match[3]
-    }
-  }
-
-  // Also check attributes if not found in payload
-  if (body.message.attributes) {
-    accountId = accountId || body.message.attributes.accountId || ''
-    locationId = locationId || body.message.attributes.locationId || ''
-    reviewId = reviewId || body.message.attributes.reviewId || ''
-  }
-
-  if (!locationId || !reviewId) {
+  // 4. Validate resolved identifiers (accounts/{accountId}/locations/{locationId}/reviews/{reviewId})
+  if (!parsed.hasRequiredIdentifiers) {
     console.warn('Pub/Sub notification missing locationId or reviewId:', {
+      messageId,
+      eventType,
       rawResourceName,
-      decodedPayload,
+      locationResourceName: parsed.locationResourceName,
+      diagnostics: parsed.diagnosticSummary,
     })
-    // Acknowledge with 200 so Pub/Sub does not redeliver unprocessable messages
+    // Acknowledge genuinely malformed / incomplete payloads so Pub/Sub does not redeliver forever
     return NextResponse.json({
       success: false,
       acknowledged: true,
+      ignored: true,
       error: 'Missing locationId or reviewId in notification payload',
     })
   }
 
   const supabase = createAdminClient()
+  let resolvedWorkspaceId: string | null = null
+  let resolvedLocationDbId: string | null = null
+  let currentRetryCount = 0
 
   try {
     // 5. Match location in NexRep database
@@ -250,7 +207,7 @@ export async function POST(request: NextRequest) {
     if (locQueryError) {
       console.error('Error querying locations table:', locQueryError.message)
       return NextResponse.json(
-        { success: false, error: 'Database query error' },
+        { success: false, retryable: true, error: 'Database query error' },
         { status: 500 }
       )
     }
@@ -268,6 +225,34 @@ export async function POST(request: NextRequest) {
     // Filter to actively connected location
     const activeLoc = matchedLocations.find((l) => l.is_connected) || matchedLocations[0]
     const workspaceId = activeLoc.workspace_id
+    resolvedWorkspaceId = workspaceId
+    resolvedLocationDbId = activeLoc.id
+
+    // 5b. Event-level duplicate protection (Pub/Sub at-least-once delivery)
+    const { data: existingEvent } = await supabase
+      .from('review_automation_events')
+      .select('event_id, processing_status, retry_count, review_id')
+      .eq('event_id', messageId)
+      .maybeSingle()
+
+    if (
+      existingEvent &&
+      (existingEvent.processing_status === 'published' ||
+        existingEvent.processing_status === 'draft_saved' ||
+        existingEvent.processing_status === 'skipped')
+    ) {
+      return NextResponse.json({
+        success: true,
+        acknowledged: true,
+        duplicate: true,
+        skipped: true,
+        messageId,
+        reviewId: existingEvent.review_id,
+        reason: `Duplicate Pub/Sub event already processed (status: ${existingEvent.processing_status}).`,
+      })
+    }
+
+    currentRetryCount = existingEvent ? (existingEvent.retry_count ?? 0) + 1 : 0
 
     // Initial event record in review_automation_events
     await recordAutomationEvent(supabase, {
@@ -277,6 +262,7 @@ export async function POST(request: NextRequest) {
       locationId: activeLoc.id,
       eventType: eventType === 'UPDATED_REVIEW' ? 'UPDATED_REVIEW' : 'NEW_REVIEW',
       processingStatus: 'received',
+      retryCount: currentRetryCount,
       metadata: {
         oidcVerified: Boolean(auth.claims),
         serviceAccount: auth.claims?.email || null,
@@ -284,7 +270,7 @@ export async function POST(request: NextRequest) {
     })
 
     // 6. Idempotency Check: Check if review reply was already published
-    const { data: existingReview } = await supabase
+    const { data: existingReview, error: existingReviewError } = await supabase
       .from('reviews')
       .select(`
         id,
@@ -304,6 +290,10 @@ export async function POST(request: NextRequest) {
       .eq('external_review_id', reviewId)
       .maybeSingle()
 
+    if (existingReviewError) {
+      throw new Error(`Failed to query existing review: ${existingReviewError.message}`)
+    }
+
     // Check if reply already published
     if (existingReview?.review_replies) {
       const replies = Array.isArray(existingReview.review_replies)
@@ -320,6 +310,7 @@ export async function POST(request: NextRequest) {
           eventType: eventType === 'UPDATED_REVIEW' ? 'UPDATED_REVIEW' : 'NEW_REVIEW',
           processingStatus: 'skipped',
           publishingStatus: 'skipped',
+          retryCount: currentRetryCount,
           metadata: { reason: 'Review already has a published reply.' },
         })
 
@@ -342,6 +333,7 @@ export async function POST(request: NextRequest) {
       reviewDate: string
       reply?: { comment: string; updateTime?: string }
     } | null = null
+    let googleFetchError: string | null = null
 
     try {
       const { accessToken } = await getValidGoogleAccessToken(supabase, workspaceId)
@@ -353,15 +345,18 @@ export async function POST(request: NextRequest) {
 
       if (gbpReviewRes.success && gbpReviewRes.review) {
         fetchedReviewData = gbpReviewRes.review
+      } else if (gbpReviewRes.error) {
+        googleFetchError = gbpReviewRes.error
       }
     } catch (tokenErr: unknown) {
-      console.warn('Could not fetch review from Google API via access token:', tokenErr)
-      // If token refresh fails due to revoked grant, log and continue with fallback payload if available
+      googleFetchError = tokenErr instanceof Error ? tokenErr.message : 'Failed to fetch review from Google API'
+      console.warn('Could not fetch review from Google API via access token:', googleFetchError)
+      // Continue to fallback payload if available
     }
 
-    // Fallback: If live fetch failed but payload embedded review details, use payload
-    if (!fetchedReviewData && decodedPayload.review) {
-      const pr = decodedPayload.review
+    // Fallback: If live fetch failed but payload embedded review details object, use payload
+    if (!fetchedReviewData && embeddedReview) {
+      const pr = embeddedReview
       let ratingNum = 5
       if (pr.starRating) {
         switch (pr.starRating) {
@@ -386,11 +381,45 @@ export async function POST(request: NextRequest) {
     }
 
     if (!fetchedReviewData) {
-      return NextResponse.json({
-        success: false,
-        acknowledged: true,
-        error: 'Unable to fetch or extract review details from Google API or payload.',
+      const isPermanentNotFound = Boolean(
+        googleFetchError && (googleFetchError.includes('404') || googleFetchError.includes('NOT_FOUND'))
+      )
+
+      await recordAutomationEvent(supabase, {
+        eventId: messageId,
+        reviewResourceId: rawResourceName || reviewId,
+        workspaceId,
+        locationId: activeLoc.id,
+        eventType: eventType === 'UPDATED_REVIEW' ? 'UPDATED_REVIEW' : 'NEW_REVIEW',
+        processingStatus: isPermanentNotFound ? 'skipped' : 'failed',
+        publishingStatus: isPermanentNotFound ? 'skipped' : 'failed',
+        retryCount: currentRetryCount,
+        errorMessage: googleFetchError || 'Unable to fetch review details from Google API.',
+        metadata: {
+          oidcVerified: Boolean(auth.claims),
+          serviceAccount: auth.claims?.email || null,
+          retryable: !isPermanentNotFound,
+        },
       })
+
+      if (isPermanentNotFound) {
+        return NextResponse.json({
+          success: true,
+          acknowledged: true,
+          skipped: true,
+          reason: 'Review no longer exists on Google Business Profile (404).',
+        })
+      }
+
+      // Return retryable 500 so Pub/Sub retries transient Google API / token failures
+      return NextResponse.json(
+        {
+          success: false,
+          retryable: true,
+          error: googleFetchError || 'Unable to fetch review details from Google API.',
+        },
+        { status: 500 }
+      )
     }
 
     // CRITICAL SAFETY CHECK: External merchant reply protection
@@ -500,7 +529,7 @@ export async function POST(request: NextRequest) {
       reviewDbId = insertedRev.id
     } else {
       // Update review content/rating if customer updated it
-      await supabase
+      const { error: updateError } = await supabase
         .from('reviews')
         .update({
           rating: fetchedReviewData.rating,
@@ -512,6 +541,10 @@ export async function POST(request: NextRequest) {
           updated_at: new Date().toISOString(),
         })
         .eq('id', reviewDbId)
+
+      if (updateError) {
+        throw new Error(`Failed to update review: ${updateError.message}`)
+      }
     }
 
     // 9. Automatically Process Review & Publish Reply
@@ -529,8 +562,14 @@ export async function POST(request: NextRequest) {
       workspaceId,
       reviewId: reviewDbId,
       replyId: processResult.replyId || null,
-      action: processResult.status === 'published' ? 'published' : 'generated',
+      action:
+        processResult.status === 'published'
+          ? 'published'
+          : !processResult.success && !processResult.skipped
+            ? 'failed'
+            : 'generated',
       content: processResult.replyContent || null,
+      errorMessage: processResult.error || null,
       metadata: {
         eventDrivenPubSub: true,
         pubsubMessageId: messageId,
@@ -541,8 +580,15 @@ export async function POST(request: NextRequest) {
       },
     })
 
-    const pubStatus: 'published' | 'failed' | 'draft_saved' =
-      processResult.status === 'published' ? 'published' : processResult.status === 'failed' ? 'failed' : 'draft_saved'
+    const isProcessingFailure = !processResult.success && !processResult.skipped
+    const pubStatus: 'published' | 'failed' | 'draft_saved' | 'skipped' =
+      processResult.status === 'published'
+        ? 'published'
+        : isProcessingFailure || processResult.status === 'failed'
+          ? 'failed'
+          : processResult.skipped && !processResult.replyId
+            ? 'skipped'
+            : 'draft_saved'
 
     await recordAutomationEvent(supabase, {
       eventId: messageId,
@@ -554,6 +600,7 @@ export async function POST(request: NextRequest) {
       processingStatus: pubStatus,
       aiGeneratedReply: processResult.replyContent || null,
       publishingStatus: pubStatus,
+      retryCount: currentRetryCount,
       errorMessage: processResult.error || null,
       metadata: {
         rating: fetchedReviewData.rating,
@@ -563,6 +610,21 @@ export async function POST(request: NextRequest) {
         serviceAccount: auth.claims?.email || null,
       },
     })
+
+    if (isProcessingFailure) {
+      return NextResponse.json(
+        {
+          success: false,
+          retryable: true,
+          messageId,
+          eventType,
+          rating: fetchedReviewData.rating,
+          replyStatus: processResult.status || 'failed',
+          error: processResult.error || 'Failed to process review reply',
+        },
+        { status: 500 }
+      )
+    }
 
     return NextResponse.json({
       success: processResult.success,
@@ -578,11 +640,33 @@ export async function POST(request: NextRequest) {
     const errorMsg = err instanceof Error ? err.message : 'Internal webhook processing failure'
     console.error('Pub/Sub webhook processing error:', errorMsg)
 
-    // Acknowledge Pub/Sub delivery even if downstream fails, to prevent infinite Pub/Sub redelivery storms
-    return NextResponse.json({
-      success: false,
-      acknowledged: true,
-      error: errorMsg,
-    })
+    if (resolvedWorkspaceId) {
+      await recordAutomationEvent(supabase, {
+        eventId: messageId,
+        reviewResourceId: rawResourceName || reviewId,
+        workspaceId: resolvedWorkspaceId,
+        locationId: resolvedLocationDbId,
+        eventType: eventType === 'UPDATED_REVIEW' ? 'UPDATED_REVIEW' : 'NEW_REVIEW',
+        processingStatus: 'failed',
+        publishingStatus: 'failed',
+        retryCount: currentRetryCount,
+        errorMessage: errorMsg,
+        metadata: {
+          retryable: true,
+          oidcVerified: Boolean(auth.claims),
+          serviceAccount: auth.claims?.email || null,
+        },
+      })
+    }
+
+    // Return retryable HTTP 500 so Google Cloud Pub/Sub retries transient DB/infrastructure failures
+    return NextResponse.json(
+      {
+        success: false,
+        retryable: true,
+        error: errorMsg,
+      },
+      { status: 500 }
+    )
   }
 }
