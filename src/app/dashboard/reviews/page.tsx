@@ -609,98 +609,181 @@ export default function ReviewsPage() {
         </div>
       </div>
 
-      {/* 24/7 Event-Driven Automation Status Card */}
-      <div
-        className={`p-4 rounded-xl border text-xs shadow-xs transition-all ${
-          automationStatus?.isActive
-            ? "bg-gradient-to-r from-emerald-50/70 via-white to-emerald-50/40 border-emerald-200"
-            : "bg-slate-50 border-slate-200"
-        }`}
-      >
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div
-              className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
-                automationStatus?.isActive ? "bg-emerald-600 text-white" : "bg-slate-200 text-slate-600"
-              }`}
-            >
-              <Zap className="w-4 h-4 fill-current" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-bold text-slate-900 text-sm">
-                  {automationStatus?.isActive
-                    ? "24/7 Event-Driven Review Automation Active"
-                    : "Review Automation Paused / Manual Mode"}
-                </span>
-                <Badge
-                  variant="outline"
-                  className={`text-[10px] px-2 py-0.5 ${
-                    automationStatus?.isActive
-                      ? "bg-emerald-100 text-emerald-800 border-emerald-300 font-semibold"
-                      : "bg-slate-200 text-slate-700 border-slate-300"
-                  }`}
-                >
-                  {automationStatus?.isActive ? "● 1–5 Stars Auto-Publishing" : "Manual Approval"}
-                </Badge>
-              </div>
-              <p className="text-slate-500 text-[11px] mt-0.5">
-                Google Cloud Pub/Sub automatically streams reviews to NexRep in real time. Manual sync is never required.
-              </p>
-            </div>
-          </div>
+      {/* Evidence-Based Event-Driven Automation Status Card */}
+      {(() => {
+        const health = automationStatus?.health;
+        const overall = health?.overallStatus;
+        const isVerifiedActive = overall === "verified_active";
+        const isReadyAwaiting = overall === "ready_awaiting_event";
+        const isDegraded =
+          overall === "degraded_worker_offline" ||
+          overall === "degraded_auth_required" ||
+          overall === "degraded_unverified_connection" ||
+          overall === "degraded_failures";
 
-          {/* Operational Metrics & Quick Pause/Resume */}
-          <div className="flex items-center gap-3 shrink-0 flex-wrap">
-            <div className="flex items-center gap-3 text-[11px] text-slate-600 sm:border-l border-slate-200 sm:pl-3">
-              <div>
-                <span className="text-slate-400 block text-[10px] uppercase">Last Received</span>
-                <span className="font-medium text-slate-800">{automationStatus?.lastReceivedText || "No events yet"}</span>
-              </div>
-              <div>
-                <span className="text-slate-400 block text-[10px] uppercase">Last Auto-Reply</span>
-                <span className="font-medium text-slate-800">{automationStatus?.lastPublishedText || "None published"}</span>
-              </div>
-              <div>
-                <span className="text-slate-400 block text-[10px] uppercase">Pending</span>
-                <span className="font-semibold text-amber-700">{automationStatus?.pendingCount ?? 0}</span>
-              </div>
-              <div>
-                <span className="text-slate-400 block text-[10px] uppercase">Failed</span>
-                <span className="font-semibold text-red-600">{automationStatus?.failedCount ?? 0}</span>
-              </div>
-            </div>
+        const cardStyle = isVerifiedActive
+          ? "bg-gradient-to-r from-emerald-50/70 via-white to-emerald-50/40 border-emerald-200"
+          : isReadyAwaiting
+            ? "bg-gradient-to-r from-blue-50/60 via-white to-blue-50/30 border-blue-200"
+            : isDegraded
+              ? "bg-gradient-to-r from-amber-50/70 via-white to-amber-50/30 border-amber-300"
+              : "bg-slate-50 border-slate-200";
 
-            {isAuthorized && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleToggleAutomation}
-                disabled={isTogglingAutomation}
-                className={`h-8 px-2.5 text-xs font-medium ${
-                  automationStatus?.isActive
-                    ? "border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100"
-                    : "border-slate-300 bg-white text-slate-800 hover:bg-slate-50"
-                }`}
-              >
-                {isTogglingAutomation ? (
-                  <>
-                    <Loader2 className="w-3 h-3 animate-spin mr-1" /> Updating...
-                  </>
-                ) : automationStatus?.isActive ? (
-                  <>
-                    <Pause className="w-3 h-3 mr-1 fill-current" /> Pause Automation
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-3 h-3 mr-1 fill-current" /> Resume Automation
-                  </>
+        const iconStyle = isVerifiedActive
+          ? "bg-emerald-600 text-white"
+          : isReadyAwaiting
+            ? "bg-blue-600 text-white"
+            : isDegraded
+              ? "bg-amber-500 text-white"
+              : "bg-slate-200 text-slate-600";
+
+        const badgeStyle = isVerifiedActive
+          ? "bg-emerald-100 text-emerald-800 border-emerald-300 font-semibold"
+          : isReadyAwaiting
+            ? "bg-blue-100 text-blue-800 border-blue-300 font-semibold"
+            : isDegraded
+              ? "bg-amber-100 text-amber-900 border-amber-300 font-semibold"
+              : "bg-slate-200 text-slate-700 border-slate-300";
+
+        return (
+          <div className={`p-4 rounded-xl border text-xs shadow-xs transition-all space-y-3 ${cardStyle}`}>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-center gap-3">
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${iconStyle}`}>
+                  {isDegraded ? <AlertCircle className="w-4 h-4" /> : <Zap className="w-4 h-4 fill-current" />}
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-bold text-slate-900 text-sm">
+                      {health?.headline ||
+                        (automationStatus?.isActive
+                          ? "Automation Configured — Checking Health..."
+                          : "Review Automation Paused / Manual Mode")}
+                    </span>
+                    <Badge variant="outline" className={`text-[10px] px-2 py-0.5 ${badgeStyle}`}>
+                      {health?.badgeLabel || (automationStatus?.isActive ? "Checking..." : "Manual Approval")}
+                    </Badge>
+                  </div>
+                  <p className="text-slate-600 text-[11px] mt-0.5">
+                    {health?.summaryDetail ||
+                      "Verifying Google Business Profile OAuth health, Pub/Sub delivery, and background worker heartbeats."}
+                  </p>
+                </div>
+              </div>
+
+              {/* Operational Metrics & Quick Pause/Resume */}
+              <div className="flex items-center gap-3 shrink-0 flex-wrap">
+                <div className="flex items-center gap-3 text-[11px] text-slate-600 sm:border-l border-slate-200 sm:pl-3">
+                  <div>
+                    <span className="text-slate-400 block text-[10px] uppercase">Last Pub/Sub Event</span>
+                    <span className="font-medium text-slate-800">
+                      {automationStatus?.lastReceivedText || "None yet"}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 block text-[10px] uppercase">Last Auto-Publish</span>
+                    <span className="font-medium text-slate-800">
+                      {automationStatus?.lastPublishedText || "None published"}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 block text-[10px] uppercase">Queued</span>
+                    <span className="font-semibold text-amber-700">{automationStatus?.pendingCount ?? 0}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 block text-[10px] uppercase">Failed</span>
+                    <span className="font-semibold text-red-600">{automationStatus?.failedCount ?? 0}</span>
+                  </div>
+                </div>
+
+                {isAuthorized && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleToggleAutomation}
+                    disabled={isTogglingAutomation}
+                    className={`h-8 px-2.5 text-xs font-medium ${
+                      automationStatus?.isActive
+                        ? "border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100"
+                        : "border-slate-300 bg-white text-slate-800 hover:bg-slate-50"
+                    }`}
+                  >
+                    {isTogglingAutomation ? (
+                      <>
+                        <Loader2 className="w-3 h-3 animate-spin mr-1" /> Updating...
+                      </>
+                    ) : automationStatus?.isActive ? (
+                      <>
+                        <Pause className="w-3 h-3 mr-1 fill-current" /> Pause Automation
+                      </>
+                    ) : (
+                      <>
+                        <Play className="w-3 h-3 mr-1 fill-current" /> Resume Automation
+                      </>
+                    )}
+                  </Button>
                 )}
-              </Button>
+              </div>
+            </div>
+
+            {/* 5-Stage Pipeline Verification Strip */}
+            {health && (
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 pt-2 border-t border-slate-200/70 text-[10px]">
+                <div className="bg-white/75 rounded-lg px-2.5 py-1.5 border border-slate-200/70">
+                  <span className="text-slate-400 uppercase block">1. Configured</span>
+                  <span className="font-semibold text-slate-800">
+                    {health.configured.isFullyAutomatic
+                      ? `Auto-Publish (${health.configured.delayMinutes}m delay)`
+                      : "Manual Approval"}
+                  </span>
+                </div>
+                <div className="bg-white/75 rounded-lg px-2.5 py-1.5 border border-slate-200/70">
+                  <span className="text-slate-400 uppercase block">2. Google API</span>
+                  <span
+                    className={`font-semibold ${
+                      health.connected.status === "connected_verified"
+                        ? "text-emerald-700"
+                        : health.connected.status === "revoked" ||
+                            health.connected.status === "refresh_failed" ||
+                            health.connected.status === "disconnected"
+                          ? "text-red-600"
+                          : "text-amber-700"
+                    }`}
+                  >
+                    {health.connected.label}
+                  </span>
+                </div>
+                <div className="bg-white/75 rounded-lg px-2.5 py-1.5 border border-slate-200/70">
+                  <span className="text-slate-400 uppercase block">3. Receiving</span>
+                  <span className="font-semibold text-slate-800">
+                    {health.receiving.hasRealPubSubEvent ? "Pub/Sub Received" : "Awaiting Event"}
+                  </span>
+                </div>
+                <div className="bg-white/75 rounded-lg px-2.5 py-1.5 border border-slate-200/70">
+                  <span className="text-slate-400 uppercase block">4. Worker</span>
+                  <span
+                    className={`font-semibold ${
+                      health.processing.workerHealthy ? "text-emerald-700" : "text-amber-700"
+                    }`}
+                  >
+                    {health.processing.workerHealthy ? "Heartbeat Healthy" : "Offline / Stale"}
+                  </span>
+                </div>
+                <div className="bg-white/75 rounded-lg px-2.5 py-1.5 border border-slate-200/70">
+                  <span className="text-slate-400 uppercase block">5. Auto-Publish</span>
+                  <span
+                    className={`font-semibold ${
+                      health.publishing.hasVerifiedAutoPublish ? "text-emerald-700" : "text-slate-600"
+                    }`}
+                  >
+                    {health.publishing.hasVerifiedAutoPublish ? "Verified Live" : "None Published Yet"}
+                  </span>
+                </div>
+              </div>
             )}
           </div>
-        </div>
-      </div>
+        );
+      })()}
 
       {/* Contextual Help Banner */}
       <ContextualHelp

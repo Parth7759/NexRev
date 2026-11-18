@@ -219,6 +219,8 @@ async function runPayloadTests() {
     gbpFetchUrl: '',
     recordedEvents: [] as any[],
     upsertedReviews: [] as any[],
+    enqueuedJobs: [] as any[],
+    openAiCalled: false,
     googlePublishCalled: false,
   }
 
@@ -258,8 +260,9 @@ async function runPayloadTests() {
       return new Response(JSON.stringify({ comment: 'mock' }), { status: 200 })
     }
 
-    // Mock OpenAI chat completions
+    // Mock OpenAI chat completions (must NOT be called inline during delayed enqueue)
     if (urlStr.includes('api.openai.com/v1/chat/completions')) {
+      observedCalls.openAiCalled = true
       return new Response(
         JSON.stringify({
           id: 'chatcmpl-mock-regression',
@@ -278,6 +281,32 @@ async function runPayloadTests() {
 
     // Mock Supabase REST API
     if (urlStr.includes('.supabase.co/rest/v1/')) {
+      if (urlStr.includes('/rpc/enqueue_review_reply_job')) {
+        let rpcArgs: any = {}
+        try {
+          rpcArgs = JSON.parse(String(init?.body || '{}'))
+        } catch {}
+        observedCalls.enqueuedJobs.push(rpcArgs)
+        return new Response(
+          JSON.stringify({
+            enqueued: true,
+            deduplicated: false,
+            reason: 'scheduled',
+            job_id: 'job-uuid-regression-1',
+            status: 'scheduled',
+            scheduled_for: rpcArgs.p_scheduled_for,
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )
+      }
+
+      if (urlStr.includes('/google_connection_health')) {
+        return new Response(JSON.stringify([{}]), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+
       if (urlStr.includes('/locations')) {
         if (mockMode === 'db_error') {
           return new Response(JSON.stringify({ message: 'connection reset by peer' }), {
@@ -445,11 +474,13 @@ async function runPayloadTests() {
   }
 
   try {
-    // 2.1 Regression Test: Exact Real Google Payload ("Fantastic Service") succeeds end-to-end
+    // 2.1 Regression Test: Exact Real Google Payload ("Fantastic Service") schedules delayed job
     mockMode = 'happy'
     observedCalls.gbpFetchUrl = ''
     observedCalls.recordedEvents = []
     observedCalls.upsertedReviews = []
+    observedCalls.enqueuedJobs = []
+    observedCalls.openAiCalled = false
     observedCalls.googlePublishCalled = false
 
     const realPayloadRes = await webhookPost(
@@ -461,10 +492,14 @@ async function runPayloadTests() {
       realPayloadRes.status === 200 &&
         realPayloadBody.success === true &&
         realPayloadBody.acknowledged === true &&
+        realPayloadBody.queued === true &&
+        realPayloadBody.delayMinutes === 5 &&
+        realPayloadBody.replyStatus === 'scheduled' &&
+        realPayloadBody.published === false &&
         realPayloadBody.eventType === 'NEW_REVIEW' &&
         realPayloadBody.rating === 5,
       'Suite 2',
-      'Regression: Real Google payload is accepted and processed (no longer dropped as missing IDs)',
+      'Regression: Real Google payload is accepted and scheduled with 5m delay (never processed inline)',
       `Status: ${realPayloadRes.status}, Body: ${JSON.stringify(realPayloadBody)}`
     )
 
@@ -486,20 +521,28 @@ async function runPayloadTests() {
     )
 
     assert(
+      observedCalls.enqueuedJobs.length === 1 &&
+        Date.parse(observedCalls.enqueuedJobs[0].p_scheduled_for) > Date.now() + 4 * 60_000,
+      'Suite 2',
+      'Regression: Enqueues delayed job in review_reply_jobs ~5 minutes in the future',
+      `Enqueued: ${JSON.stringify(observedCalls.enqueuedJobs)}`
+    )
+
+    assert(
       observedCalls.recordedEvents.length >= 2 &&
         observedCalls.recordedEvents[0].processing_status === 'received' &&
         observedCalls.recordedEvents[observedCalls.recordedEvents.length - 1].processing_status ===
-          'draft_saved',
+          'scheduled',
       'Suite 2',
-      'Regression: Persists initial received and final draft_saved state in review_automation_events',
+      'Regression: Persists initial received and scheduled state in review_automation_events',
       `Events: ${JSON.stringify(observedCalls.recordedEvents)}`
     )
 
     assert(
-      observedCalls.googlePublishCalled === false,
+      observedCalls.openAiCalled === false && observedCalls.googlePublishCalled === false,
       'Suite 2',
-      'Safety: Zero live Google replies published during regression test',
-      `googlePublishCalled=${observedCalls.googlePublishCalled}`
+      'Safety: Zero inline OpenAI generation or Google publishing during Pub/Sub webhook receipt',
+      `openAiCalled=${observedCalls.openAiCalled}, googlePublishCalled=${observedCalls.googlePublishCalled}`
     )
 
     // 2.2 Transient DB error returns retryable HTTP 500

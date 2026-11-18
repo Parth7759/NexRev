@@ -4,14 +4,18 @@ import {
   getValidGoogleAccessToken,
   fetchSingleGoogleReview,
 } from '@/lib/google-business'
-import { autoProcessSingleReview } from '@/lib/reply-automation'
-import { logReplyAudit, TypedSupabaseClient } from '@/lib/reply-safety'
+import { TypedSupabaseClient } from '@/lib/reply-safety'
 import { Database } from '@/types/database.types'
 import { authenticateGooglePubSubWebhook } from '@/lib/google-pubsub-auth'
 import {
   DecodedNotificationPayload,
   parseGooglePubSubNotificationPayload,
 } from '@/lib/google-pubsub-payload'
+import {
+  enqueueScheduledReplyJob,
+  classifyGoogleError,
+  recordGoogleConnectionHealth,
+} from '@/lib/reply-queue'
 
 interface PubSubPushBody {
   message?: {
@@ -71,7 +75,15 @@ async function recordAutomationEvent(
     locationId?: string | null
     reviewId?: string | null
     eventType: 'NEW_REVIEW' | 'UPDATED_REVIEW' | 'SYNC_RECONCILIATION'
-    processingStatus: 'received' | 'ai_generating' | 'publishing' | 'published' | 'failed' | 'skipped' | 'draft_saved'
+    processingStatus:
+      | 'received'
+      | 'scheduled'
+      | 'ai_generating'
+      | 'publishing'
+      | 'published'
+      | 'failed'
+      | 'skipped'
+      | 'draft_saved'
     aiGeneratedReply?: string | null
     publishingStatus?: 'pending' | 'published' | 'failed' | 'skipped' | 'draft_saved'
     retryCount?: number
@@ -237,7 +249,8 @@ export async function POST(request: NextRequest) {
 
     if (
       existingEvent &&
-      (existingEvent.processing_status === 'published' ||
+      (existingEvent.processing_status === 'scheduled' ||
+        existingEvent.processing_status === 'published' ||
         existingEvent.processing_status === 'draft_saved' ||
         existingEvent.processing_status === 'skipped')
     ) {
@@ -345,12 +358,32 @@ export async function POST(request: NextRequest) {
 
       if (gbpReviewRes.success && gbpReviewRes.review) {
         fetchedReviewData = gbpReviewRes.review
+        const verifiedNow = new Date().toISOString()
+        await recordGoogleConnectionHealth(supabase, workspaceId, {
+          status: 'connected_verified',
+          tokenStored: true,
+          hasRequiredScope: true,
+          lastRefreshSucceededAt: verifiedNow,
+          lastGbpApiVerifiedAt: verifiedNow,
+          lastErrorCode: null,
+          lastErrorMessage: null,
+          metadata: { verifiedVia: 'pubsub_webhook_fetch' },
+        })
       } else if (gbpReviewRes.error) {
         googleFetchError = gbpReviewRes.error
       }
     } catch (tokenErr: unknown) {
       googleFetchError = tokenErr instanceof Error ? tokenErr.message : 'Failed to fetch review from Google API'
       console.warn('Could not fetch review from Google API via access token:', googleFetchError)
+      const errKind = classifyGoogleError(googleFetchError)
+      if (errKind === 'revoked') {
+        await recordGoogleConnectionHealth(supabase, workspaceId, {
+          status: 'revoked',
+          tokenStored: true,
+          lastErrorCode: errKind,
+          lastErrorMessage: googleFetchError,
+        })
+      }
       // Continue to fallback payload if available
     }
 
@@ -547,48 +580,58 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // 9. Automatically Process Review & Publish Reply
-    // autoProcessSingleReview evaluates workspace safety policy:
-    // When "Fully Automatic AI Replies (All 1-5 Stars)" is active, it generates contextual AI reply
-    // and immediately publishes to Google via publishGoogleReviewReply.
-    const processResult = await autoProcessSingleReview(supabase, {
-      reviewId: reviewDbId,
-      workspaceId,
-      dryRun: false,
-    })
+    // 9. Enqueue Delayed Reply Job (Enforces workspace auto_reply_delay_minutes; NEVER generates or publishes inline)
+    const normalizedEventType: 'NEW_REVIEW' | 'UPDATED_REVIEW' =
+      eventType === 'UPDATED_REVIEW' ? 'UPDATED_REVIEW' : 'NEW_REVIEW'
 
-    // Record Pub/Sub delivery in audit trail metadata
-    await logReplyAudit(supabase, {
+    const enqueueResult = await enqueueScheduledReplyJob(supabase, {
       workspaceId,
+      locationId: activeLoc.id,
       reviewId: reviewDbId,
-      replyId: processResult.replyId || null,
-      action:
-        processResult.status === 'published'
-          ? 'published'
-          : !processResult.success && !processResult.skipped
-            ? 'failed'
-            : 'generated',
-      content: processResult.replyContent || null,
-      errorMessage: processResult.error || null,
+      externalReviewId: reviewId,
+      sourceEventId: messageId,
+      sourceEventType: normalizedEventType,
       metadata: {
-        eventDrivenPubSub: true,
-        pubsubMessageId: messageId,
-        eventType,
         rating: fetchedReviewData.rating,
-        status: processResult.status,
-        requiresApproval: processResult.requiresApproval,
+        oidcVerified: Boolean(auth.claims),
+        serviceAccount: auth.claims?.email || null,
       },
     })
 
-    const isProcessingFailure = !processResult.success && !processResult.skipped
-    const pubStatus: 'published' | 'failed' | 'draft_saved' | 'skipped' =
-      processResult.status === 'published'
-        ? 'published'
-        : isProcessingFailure || processResult.status === 'failed'
-          ? 'failed'
-          : processResult.skipped && !processResult.replyId
-            ? 'skipped'
-            : 'draft_saved'
+    if (!enqueueResult.success) {
+      await recordAutomationEvent(supabase, {
+        eventId: messageId,
+        reviewResourceId: rawResourceName || reviewId,
+        workspaceId,
+        locationId: activeLoc.id,
+        reviewId: reviewDbId,
+        eventType: normalizedEventType,
+        processingStatus: 'failed',
+        publishingStatus: 'failed',
+        retryCount: currentRetryCount,
+        errorMessage: enqueueResult.error || 'Failed to enqueue delayed review reply job',
+        metadata: {
+          rating: fetchedReviewData.rating,
+          retryable: true,
+          oidcVerified: Boolean(auth.claims),
+          serviceAccount: auth.claims?.email || null,
+        },
+      })
+
+      return NextResponse.json(
+        {
+          success: false,
+          retryable: true,
+          messageId,
+          eventType: normalizedEventType,
+          error: enqueueResult.error || 'Failed to enqueue delayed review reply job',
+        },
+        { status: 500 }
+      )
+    }
+
+    const isSkippedExistingReply =
+      enqueueResult.reason === 'already_published' || enqueueResult.reason === 'draft_exists'
 
     await recordAutomationEvent(supabase, {
       eventId: messageId,
@@ -596,45 +639,37 @@ export async function POST(request: NextRequest) {
       workspaceId,
       locationId: activeLoc.id,
       reviewId: reviewDbId,
-      eventType: eventType === 'UPDATED_REVIEW' ? 'UPDATED_REVIEW' : 'NEW_REVIEW',
-      processingStatus: pubStatus,
-      aiGeneratedReply: processResult.replyContent || null,
-      publishingStatus: pubStatus,
+      eventType: normalizedEventType,
+      processingStatus: isSkippedExistingReply ? 'skipped' : 'scheduled',
+      publishingStatus: isSkippedExistingReply ? 'skipped' : 'pending',
       retryCount: currentRetryCount,
-      errorMessage: processResult.error || null,
       metadata: {
         rating: fetchedReviewData.rating,
-        policyReason: processResult.reason,
-        requiresApproval: processResult.requiresApproval,
+        jobId: enqueueResult.jobId,
+        scheduledFor: enqueueResult.scheduledFor,
+        delayMinutes: enqueueResult.delayMinutes,
+        deduplicated: enqueueResult.deduplicated,
+        enqueueReason: enqueueResult.reason,
         oidcVerified: Boolean(auth.claims),
         serviceAccount: auth.claims?.email || null,
       },
     })
 
-    if (isProcessingFailure) {
-      return NextResponse.json(
-        {
-          success: false,
-          retryable: true,
-          messageId,
-          eventType,
-          rating: fetchedReviewData.rating,
-          replyStatus: processResult.status || 'failed',
-          error: processResult.error || 'Failed to process review reply',
-        },
-        { status: 500 }
-      )
-    }
-
     return NextResponse.json({
-      success: processResult.success,
+      success: true,
       acknowledged: true,
+      queued: !isSkippedExistingReply,
+      deduplicated: enqueueResult.deduplicated,
+      skipped: isSkippedExistingReply,
       messageId,
-      eventType,
+      eventType: normalizedEventType,
       rating: fetchedReviewData.rating,
-      replyStatus: processResult.status,
-      published: processResult.status === 'published',
-      reason: processResult.reason,
+      jobId: enqueueResult.jobId,
+      scheduledFor: enqueueResult.scheduledFor,
+      delayMinutes: enqueueResult.delayMinutes,
+      replyStatus: isSkippedExistingReply ? 'skipped' : 'scheduled',
+      published: false,
+      reason: enqueueResult.reason,
     })
   } catch (err: unknown) {
     const errorMsg = err instanceof Error ? err.message : 'Internal webhook processing failure'

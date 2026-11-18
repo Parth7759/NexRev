@@ -465,7 +465,7 @@ export interface Database {
           location_id: string | null
           review_id: string | null
           event_type: 'NEW_REVIEW' | 'UPDATED_REVIEW' | 'SYNC_RECONCILIATION'
-          processing_status: 'received' | 'ai_generating' | 'publishing' | 'published' | 'failed' | 'skipped' | 'draft_saved'
+          processing_status: 'received' | 'scheduled' | 'ai_generating' | 'publishing' | 'published' | 'failed' | 'skipped' | 'draft_saved'
           ai_generated_reply: string | null
           publishing_status: 'pending' | 'published' | 'failed' | 'skipped' | 'draft_saved'
           retry_count: number
@@ -482,7 +482,7 @@ export interface Database {
           location_id?: string | null
           review_id?: string | null
           event_type?: 'NEW_REVIEW' | 'UPDATED_REVIEW' | 'SYNC_RECONCILIATION'
-          processing_status?: 'received' | 'ai_generating' | 'publishing' | 'published' | 'failed' | 'skipped' | 'draft_saved'
+          processing_status?: 'received' | 'scheduled' | 'ai_generating' | 'publishing' | 'published' | 'failed' | 'skipped' | 'draft_saved'
           ai_generated_reply?: string | null
           publishing_status?: 'pending' | 'published' | 'failed' | 'skipped' | 'draft_saved'
           retry_count?: number
@@ -499,7 +499,7 @@ export interface Database {
           location_id?: string | null
           review_id?: string | null
           event_type?: 'NEW_REVIEW' | 'UPDATED_REVIEW' | 'SYNC_RECONCILIATION'
-          processing_status?: 'received' | 'ai_generating' | 'publishing' | 'published' | 'failed' | 'skipped' | 'draft_saved'
+          processing_status?: 'received' | 'scheduled' | 'ai_generating' | 'publishing' | 'published' | 'failed' | 'skipped' | 'draft_saved'
           ai_generated_reply?: string | null
           publishing_status?: 'pending' | 'published' | 'failed' | 'skipped' | 'draft_saved'
           retry_count?: number
@@ -507,6 +507,168 @@ export interface Database {
           metadata?: Json
           created_at?: string
           updated_at?: string
+        }
+        Relationships: []
+      }
+      review_reply_jobs: {
+        Row: {
+          id: string
+          workspace_id: string
+          location_id: string
+          review_id: string
+          external_review_id: string
+          source_event_id: string | null
+          source_event_type: 'NEW_REVIEW' | 'UPDATED_REVIEW' | 'SYNC_RECONCILIATION'
+          status: 'scheduled' | 'processing' | 'published' | 'draft_saved' | 'skipped' | 'failed' | 'dead_letter'
+          scheduled_for: string
+          locked_at: string | null
+          locked_by: string | null
+          attempts: number
+          max_attempts: number
+          next_retry_at: string | null
+          last_error: string | null
+          processed_at: string | null
+          metadata: Json
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          workspace_id: string
+          location_id: string
+          review_id: string
+          external_review_id: string
+          source_event_id?: string | null
+          source_event_type?: 'NEW_REVIEW' | 'UPDATED_REVIEW' | 'SYNC_RECONCILIATION'
+          status?: 'scheduled' | 'processing' | 'published' | 'draft_saved' | 'skipped' | 'failed' | 'dead_letter'
+          scheduled_for: string
+          locked_at?: string | null
+          locked_by?: string | null
+          attempts?: number
+          max_attempts?: number
+          next_retry_at?: string | null
+          last_error?: string | null
+          processed_at?: string | null
+          metadata?: Json
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          workspace_id?: string
+          location_id?: string
+          review_id?: string
+          external_review_id?: string
+          source_event_id?: string | null
+          source_event_type?: 'NEW_REVIEW' | 'UPDATED_REVIEW' | 'SYNC_RECONCILIATION'
+          status?: 'scheduled' | 'processing' | 'published' | 'draft_saved' | 'skipped' | 'failed' | 'dead_letter'
+          scheduled_for?: string
+          locked_at?: string | null
+          locked_by?: string | null
+          attempts?: number
+          max_attempts?: number
+          next_retry_at?: string | null
+          last_error?: string | null
+          processed_at?: string | null
+          metadata?: Json
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      google_connection_health: {
+        Row: {
+          workspace_id: string
+          status: 'unknown' | 'connected_verified' | 'token_stored_unverified' | 'refresh_failed' | 'revoked' | 'api_error' | 'disconnected'
+          token_stored: boolean
+          has_required_scope: boolean
+          last_refresh_succeeded_at: string | null
+          last_gbp_api_verified_at: string | null
+          last_checked_at: string | null
+          last_error_code: string | null
+          last_error_message: string | null
+          metadata: Json
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          workspace_id: string
+          status?: 'unknown' | 'connected_verified' | 'token_stored_unverified' | 'refresh_failed' | 'revoked' | 'api_error' | 'disconnected'
+          token_stored?: boolean
+          has_required_scope?: boolean
+          last_refresh_succeeded_at?: string | null
+          last_gbp_api_verified_at?: string | null
+          last_checked_at?: string | null
+          last_error_code?: string | null
+          last_error_message?: string | null
+          metadata?: Json
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          workspace_id?: string
+          status?: 'unknown' | 'connected_verified' | 'token_stored_unverified' | 'refresh_failed' | 'revoked' | 'api_error' | 'disconnected'
+          token_stored?: boolean
+          has_required_scope?: boolean
+          last_refresh_succeeded_at?: string | null
+          last_gbp_api_verified_at?: string | null
+          last_checked_at?: string | null
+          last_error_code?: string | null
+          last_error_message?: string | null
+          metadata?: Json
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      automation_worker_runs: {
+        Row: {
+          id: string
+          worker_id: string
+          trigger_source: string
+          started_at: string
+          completed_at: string | null
+          status: 'running' | 'succeeded' | 'failed'
+          claimed_count: number
+          published_count: number
+          draft_count: number
+          skipped_count: number
+          failed_count: number
+          error_message: string | null
+          metadata: Json
+          created_at: string
+        }
+        Insert: {
+          id?: string
+          worker_id: string
+          trigger_source?: string
+          started_at?: string
+          completed_at?: string | null
+          status?: 'running' | 'succeeded' | 'failed'
+          claimed_count?: number
+          published_count?: number
+          draft_count?: number
+          skipped_count?: number
+          failed_count?: number
+          error_message?: string | null
+          metadata?: Json
+          created_at?: string
+        }
+        Update: {
+          id?: string
+          worker_id?: string
+          trigger_source?: string
+          started_at?: string
+          completed_at?: string | null
+          status?: 'running' | 'succeeded' | 'failed'
+          claimed_count?: number
+          published_count?: number
+          draft_count?: number
+          skipped_count?: number
+          failed_count?: number
+          error_message?: string | null
+          metadata?: Json
+          created_at?: string
         }
         Relationships: []
       }
@@ -535,6 +697,28 @@ export interface Database {
           p_event_type: string
         }
         Returns: boolean
+      }
+      enqueue_review_reply_job: {
+        Args: {
+          p_workspace_id: string
+          p_location_id: string
+          p_review_id: string
+          p_external_review_id: string
+          p_source_event_id: string
+          p_source_event_type: string
+          p_scheduled_for: string
+          p_max_attempts?: number
+          p_metadata?: Json
+        }
+        Returns: Json
+      }
+      claim_due_review_reply_jobs: {
+        Args: {
+          p_worker_id: string
+          p_limit?: number
+          p_stale_lock_minutes?: number
+        }
+        Returns: Database['public']['Tables']['review_reply_jobs']['Row'][]
       }
     }
     Enums: {

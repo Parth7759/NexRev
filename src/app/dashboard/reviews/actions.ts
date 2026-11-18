@@ -15,6 +15,10 @@ import {
 } from '@/lib/reply-safety'
 import { publishGoogleReviewReply } from '@/lib/google-business'
 import { autoProcessSingleReview } from '@/lib/reply-automation'
+import {
+  evaluateAutomationHealth,
+  EvaluatedAutomationHealth,
+} from '@/lib/automation-health'
 
 export interface GenerateReplyActionParams {
   authorName?: string
@@ -657,10 +661,25 @@ export interface AutomationStatusResult {
   pendingCount: number
   failedCount: number
   userRole: string | null
+  health: EvaluatedAutomationHealth | null
+}
+
+function formatShortTimestamp(iso: string | null | undefined): string | null {
+  if (!iso) return null
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return null
+  return d.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
 }
 
 /**
- * Server Action: Fetches real-time review automation status and operational metrics for the workspace.
+ * Server Action: Fetches real-time, evidence-based review automation health and operational metrics.
+ * Distinguishes configured, connected (verified OAuth/GBP API), receiving (Pub/Sub),
+ * processing (worker heartbeat + queue), and publishing (AI auto-replies only).
  */
 export async function getAutomationStatusAction(workspaceId?: string): Promise<AutomationStatusResult> {
   const fallback: AutomationStatusResult = {
@@ -670,6 +689,7 @@ export async function getAutomationStatusAction(workspaceId?: string): Promise<A
     pendingCount: 0,
     failedCount: 0,
     userRole: null,
+    health: null,
   }
 
   if (!workspaceId) return fallback
@@ -682,48 +702,152 @@ export async function getAutomationStatusAction(workspaceId?: string): Promise<A
   if (!membership.isMember) return fallback
 
   const settings = await getWorkspaceReplySettings(supabase, workspaceId)
-  const isAutoActive = isFullyAutomaticModeActive(settings)
+  const isAutoConfigured = isFullyAutomaticModeActive(settings)
 
-  // Latest review received
-  const { data: latestRev } = await supabase
-    .from('reviews')
-    .select('created_at, review_date')
-    .eq('workspace_id', workspaceId)
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle()
+  // Parallel read-only health queries across all 5 pipeline stages
+  const [
+    integrationRes,
+    connectedLocsRes,
+    connHealthRes,
+    latestPubSubEventRes,
+    latestWorkerRunRes,
+    scheduledJobsRes,
+    processingJobsRes,
+    failedJobsRes,
+    deadLetterJobsRes,
+    nextDueJobRes,
+    latestAiPubRes,
+    unansweredRevRes,
+    failedReplyRes,
+  ] = await Promise.all([
+    supabase
+      .from('google_integrations')
+      .select('id, scope, refresh_token_encrypted')
+      .eq('workspace_id', workspaceId)
+      .maybeSingle(),
+    supabase
+      .from('locations')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', workspaceId)
+      .eq('is_connected', true),
+    supabase
+      .from('google_connection_health')
+      .select(
+        'status, last_refresh_succeeded_at, last_gbp_api_verified_at, last_checked_at, last_error_code, last_error_message'
+      )
+      .eq('workspace_id', workspaceId)
+      .maybeSingle(),
+    supabase
+      .from('review_automation_events')
+      .select('created_at, processing_status')
+      .eq('workspace_id', workspaceId)
+      .in('event_type', ['NEW_REVIEW', 'UPDATED_REVIEW'])
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from('automation_worker_runs')
+      .select('started_at, completed_at, status')
+      .order('started_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from('review_reply_jobs')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', workspaceId)
+      .eq('status', 'scheduled'),
+    supabase
+      .from('review_reply_jobs')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', workspaceId)
+      .eq('status', 'processing'),
+    supabase
+      .from('review_reply_jobs')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', workspaceId)
+      .eq('status', 'failed'),
+    supabase
+      .from('review_reply_jobs')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', workspaceId)
+      .eq('status', 'dead_letter'),
+    supabase
+      .from('review_reply_jobs')
+      .select('scheduled_for')
+      .eq('workspace_id', workspaceId)
+      .eq('status', 'scheduled')
+      .order('scheduled_for', { ascending: true })
+      .limit(1)
+      .maybeSingle(),
+    // Strictly AI-generated published replies (NEVER imported historical merchant replies)
+    supabase
+      .from('review_replies')
+      .select('created_at, updated_at')
+      .eq('workspace_id', workspaceId)
+      .eq('status', 'published')
+      .eq('is_ai_generated', true)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from('reviews')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', workspaceId)
+      .eq('status', 'unanswered'),
+    supabase
+      .from('review_replies')
+      .select('id', { count: 'exact', head: true })
+      .eq('workspace_id', workspaceId)
+      .eq('status', 'failed'),
+  ])
 
-  // Latest reply published
-  const { data: latestPub } = await supabase
-    .from('review_replies')
-    .select('created_at')
-    .eq('workspace_id', workspaceId)
-    .eq('status', 'published')
-    .order('created_at', { ascending: false })
-    .limit(1)
-    .maybeSingle()
+  const integration = integrationRes.data
+  const scopes = integration?.scope ? integration.scope.split(' ') : []
+  const hasRequiredScope = scopes.includes('https://www.googleapis.com/auth/business.manage')
+  const connHealthData = connHealthRes.data
 
-  // Count pending (unanswered) reviews
-  const { count: pendingCount } = await supabase
-    .from('reviews')
-    .select('id', { count: 'exact', head: true })
-    .eq('workspace_id', workspaceId)
-    .eq('status', 'unanswered')
-
-  // Count failed review replies
-  const { count: failedCount } = await supabase
-    .from('review_replies')
-    .select('id', { count: 'exact', head: true })
-    .eq('workspace_id', workspaceId)
-    .eq('status', 'failed')
+  const health = evaluateAutomationHealth({
+    autoReplyMode: settings.autoReplyMode,
+    requireApprovalForCritical: settings.requireApprovalForCritical,
+    autoReplyDelayMinutes: settings.autoReplyDelayMinutes,
+    isFullyAutomatic: isAutoConfigured,
+    hasStoredIntegrationRow: Boolean(integration && integration.refresh_token_encrypted),
+    hasRequiredBusinessManageScope: hasRequiredScope,
+    connectedLocationCount: connectedLocsRes.count || 0,
+    connectionHealthRow: connHealthData
+      ? {
+          status: connHealthData.status,
+          lastRefreshSucceededAt: connHealthData.last_refresh_succeeded_at,
+          lastGbpApiVerifiedAt: connHealthData.last_gbp_api_verified_at,
+          lastCheckedAt: connHealthData.last_checked_at,
+          lastErrorCode: connHealthData.last_error_code,
+          lastErrorMessage: connHealthData.last_error_message,
+        }
+      : null,
+    lastPubSubEventAt: latestPubSubEventRes.data?.created_at ?? null,
+    lastPubSubEventStatus: latestPubSubEventRes.data?.processing_status ?? null,
+    lastWorkerRunAt:
+      latestWorkerRunRes.data?.completed_at ?? latestWorkerRunRes.data?.started_at ?? null,
+    lastWorkerRunStatus: latestWorkerRunRes.data?.status ?? null,
+    scheduledJobCount: scheduledJobsRes.count || 0,
+    processingJobCount: processingJobsRes.count || 0,
+    failedJobCount: failedJobsRes.count || 0,
+    deadLetterJobCount: deadLetterJobsRes.count || 0,
+    failedReplyCount: failedReplyRes.count || 0,
+    nextScheduledFor: nextDueJobRes.data?.scheduled_for ?? null,
+    lastAiAutoPublishedAt:
+      latestAiPubRes.data?.updated_at ?? latestAiPubRes.data?.created_at ?? null,
+    unansweredReviewCount: unansweredRevRes.count || 0,
+  })
 
   return {
-    isActive: isAutoActive,
-    lastReceivedText: latestRev?.created_at ? new Date(latestRev.created_at).toLocaleDateString() : null,
-    lastPublishedText: latestPub?.created_at ? new Date(latestPub.created_at).toLocaleDateString() : null,
-    pendingCount: pendingCount || 0,
-    failedCount: failedCount || 0,
+    isActive: isAutoConfigured,
+    lastReceivedText: formatShortTimestamp(health.receiving.lastPubSubEventAt),
+    lastPublishedText: formatShortTimestamp(health.publishing.lastAiAutoPublishedAt),
+    pendingCount: health.processing.scheduledCount + health.processing.processingCount,
+    failedCount: health.processing.failedCount,
     userRole: membership.role || null,
+    health,
   }
 }
 
