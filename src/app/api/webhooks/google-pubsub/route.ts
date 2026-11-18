@@ -16,6 +16,10 @@ import {
   classifyGoogleError,
   recordGoogleConnectionHealth,
 } from '@/lib/reply-queue'
+import {
+  normalizeGoogleAccountIdBare,
+  normalizeGoogleLocationIdBare,
+} from '@/lib/google-notification-registration'
 
 interface PubSubPushBody {
   message?: {
@@ -206,14 +210,14 @@ export async function POST(request: NextRequest) {
   let currentRetryCount = 0
 
   try {
-    // 5. Match location in NexRep database
-    // Normalize IDs for matching
-    const cleanLocationId = locationId.replace(/^locations\//, '')
-    const cleanAccountId = accountId.replace(/^accounts\//, '')
+    // 5. Strict Multi-Tenant Active Location Matching (Fail Closed on Disconnected or Ambiguous Matches)
+    const cleanLocationId = normalizeGoogleLocationIdBare(locationId)
+    const cleanAccountId = normalizeGoogleAccountIdBare(accountId)
 
     const { data: matchedLocations, error: locQueryError } = await supabase
       .from('locations')
       .select('id, workspace_id, name, google_location_id, google_account_id, is_connected')
+      .eq('is_connected', true)
       .or(`google_location_id.eq.${cleanLocationId},google_location_id.eq.locations/${cleanLocationId}`)
 
     if (locQueryError) {
@@ -224,19 +228,99 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    if (!matchedLocations || matchedLocations.length === 0) {
-      // Unrecognized location in NexRep — acknowledge so Pub/Sub drops message
+    // Filter strictly to active connected locations matching normalized locationId AND (when provided) normalized accountId
+    const eligibleMatches = (matchedLocations || []).filter((loc) => {
+      if (!loc.is_connected) return false
+      if (normalizeGoogleLocationIdBare(loc.google_location_id) !== cleanLocationId) return false
+      if (cleanAccountId) {
+        const locAccBare = normalizeGoogleAccountIdBare(loc.google_account_id)
+        if (!locAccBare || locAccBare !== cleanAccountId) return false
+      }
+      return true
+    })
+
+    if (eligibleMatches.length === 0) {
+      // Unrecognized, disconnected, or account-mismatched location — acknowledge safely with zero DB writes
       return NextResponse.json({
         success: true,
         acknowledged: true,
         ignored: true,
-        reason: `Location ${cleanLocationId} is not registered in this NexRep environment`,
+        reason: `No active authorized location matches location=${cleanLocationId}`,
       })
     }
 
-    // Filter to actively connected location
-    const activeLoc = matchedLocations.find((l) => l.is_connected) || matchedLocations[0]
+    if (eligibleMatches.length > 1) {
+      // Fail closed on ambiguous cross-workspace location matches (zero DB writes, zero Google API calls)
+      console.warn('Pub/Sub webhook ambiguous active location match:', {
+        messageId,
+        matchCount: eligibleMatches.length,
+        locationId: cleanLocationId,
+        accountId: cleanAccountId || null,
+      })
+      return NextResponse.json({
+        success: true,
+        acknowledged: true,
+        ignored: true,
+        reason: 'Ambiguous active location mapping across multiple workspaces; skipped safely.',
+      })
+    }
+
+    const activeLoc = eligibleMatches[0]
     const workspaceId = activeLoc.workspace_id
+
+    // Verify workspace has an authorized Google Business Profile integration with required scope
+    // and enforces the single-connected-profile invariant before any review write or job enqueue.
+    const [integCheckRes, wsActiveLocsRes] = await Promise.all([
+      supabase
+        .from('google_integrations')
+        .select('id, workspace_id, scope')
+        .eq('workspace_id', workspaceId)
+        .maybeSingle(),
+      supabase
+        .from('locations')
+        .select('id')
+        .eq('workspace_id', workspaceId)
+        .eq('is_connected', true),
+    ])
+
+    const integRow = integCheckRes.data as { id?: string; workspace_id?: string; scope?: string | null } | null
+    if (!integRow) {
+      return NextResponse.json({
+        success: true,
+        acknowledged: true,
+        ignored: true,
+        reason: 'Matched workspace has no active Google Business Profile OAuth integration.',
+      })
+    }
+
+    if (
+      typeof integRow.scope === 'string' &&
+      integRow.scope.trim() !== '' &&
+      !integRow.scope.split(/\s+/).includes('https://www.googleapis.com/auth/business.manage')
+    ) {
+      return NextResponse.json({
+        success: true,
+        acknowledged: true,
+        ignored: true,
+        reason: 'Matched workspace Google integration is missing required business.manage scope.',
+      })
+    }
+
+    const wsActiveLocs = wsActiveLocsRes.data || []
+    if (wsActiveLocs.length > 1) {
+      console.warn('Pub/Sub webhook workspace has multiple active connected locations:', {
+        messageId,
+        activeCount: wsActiveLocs.length,
+        locationId: cleanLocationId,
+      })
+      return NextResponse.json({
+        success: true,
+        acknowledged: true,
+        ignored: true,
+        reason: 'Matched workspace has ambiguous multi-location active state; skipped safely.',
+      })
+    }
+
     resolvedWorkspaceId = workspaceId
     resolvedLocationDbId = activeLoc.id
 

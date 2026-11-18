@@ -60,7 +60,8 @@ export class GoogleApiError extends Error {
  */
 export async function getValidGoogleAccessToken(
   supabase: TypedSupabaseClient,
-  workspaceId: string
+  workspaceId: string,
+  options?: { forceRefresh?: boolean }
 ): Promise<{ accessToken: string; accountId: string | null; accountName: string | null }> {
   const { data: integration, error } = await supabase
     .from('google_integrations')
@@ -77,8 +78,8 @@ export async function getValidGoogleAccessToken(
   const expiresAtMs = new Date(integration.expires_at).getTime()
   const isExpiringSoon = Date.now() + 5 * 60 * 1000 >= expiresAtMs
 
-  // If the current token is still valid (more than 5 minutes remaining), decrypt and return
-  if (!isExpiringSoon && integration.access_token_encrypted) {
+  // If the current token is still valid (more than 5 minutes remaining) and forceRefresh is not requested
+  if (!options?.forceRefresh && !isExpiringSoon && integration.access_token_encrypted) {
     try {
       const decryptedAccess = decryptToken(integration.access_token_encrypted)
       return {
@@ -606,8 +607,8 @@ export async function publishGoogleReviewReply(
     // If 401 Unauthorized, token might have been invalidated; force refresh token renewal and retry once
     if (!result.ok && result.status === 401) {
       try {
-        // Clear cached expiration by retrieving a fresh token
-        const fresh = await getValidGoogleAccessToken(supabase, workspaceId)
+        // Force refresh token renewal on 401 Unauthorized
+        const fresh = await getValidGoogleAccessToken(supabase, workspaceId, { forceRefresh: true })
         accessToken = fresh.accessToken
         result = await attemptPublish(accessToken)
       } catch (refreshErr: unknown) {
@@ -760,119 +761,317 @@ export interface GoogleNotificationSetting {
   notificationTypes?: string[]
 }
 
-/**
- * Retrieves the current Google Business Profile account notification settings (Pub/Sub topic and event types).
- */
-export async function getGoogleAccountNotificationSetting(
-  accessToken: string,
-  accountName: string
-): Promise<{ success: boolean; setting?: GoogleNotificationSetting; error?: string }> {
-  const normalizedAccount = accountName.startsWith('accounts/') ? accountName : `accounts/${accountName}`
+export type NotificationUpdateMaskField = 'pubsubTopic' | 'notificationTypes'
 
-  // 1. Try Google My Business Account Management API v1
+export interface GoogleNotificationSettingResult {
+  success: boolean
+  setting?: GoogleNotificationSetting
+  httpStatus?: number
+  errorCode?: string
+  error?: string
+  endpointUsed?: 'mybusinessnotifications_v1' | 'mybusiness_v4'
+}
+
+const VALID_GBP_PUBSUB_TOPIC_REGEX = /^projects\/[a-z0-9-]+\/topics\/[A-Za-z0-9-_.~+%]+$/
+
+function normalizeNotificationAccountPath(accountName: string): string {
+  const bare = (accountName || '').trim().replace(/^\/?accounts\//i, '').toLowerCase()
+  if (!bare || /[\s/]/.test(bare)) {
+    return ''
+  }
+  return `accounts/${bare}`
+}
+
+function parseGoogleErrorResponse(rawText: string, status: number): { errorCode: string; message: string } {
+  let errorCode = `HTTP_${status}`
+  let message = rawText || `Google API error (HTTP ${status})`
+
   try {
-    const v1Url = `https://mybusinessaccountmanagement.googleapis.com/v1/${normalizedAccount}/notificationSetting`
-    const res = await fetch(v1Url, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        Accept: 'application/json',
-      },
-    })
-
-    if (res.ok) {
-      const data = await res.json()
-      return { success: true, setting: data }
+    const parsed = JSON.parse(rawText || '{}') as {
+      error?: { status?: string; message?: string; code?: number }
+    }
+    if (parsed?.error?.status) {
+      errorCode = parsed.error.status
+    }
+    if (parsed?.error?.message) {
+      message = parsed.error.message
     }
   } catch {
-    // Continue to fallback
+    // Keep raw text fallback
   }
 
-  // 2. Fallback to GMB v4 notificationSetting endpoint
+  // Scrub any accidental token material and bound length
+  const sanitized = message
+    .replace(/Bearer\s+[A-Za-z0-9\-._~+/]+=*/gi, 'Bearer [REDACTED]')
+    .replace(/ya29\.[A-Za-z0-9\-._]+/g, '[REDACTED_TOKEN]')
+    .replace(/1\/\/[A-Za-z0-9\-._]+/g, '[REDACTED_REFRESH_TOKEN]')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 450)
+
+  return { errorCode, message: sanitized || `Google API error (HTTP ${status})` }
+}
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number = 15_000
+): Promise<Response> {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const v4Url = `https://mybusiness.googleapis.com/v4/${normalizedAccount}/notificationSetting`
-    const res = await fetch(v4Url, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        Accept: 'application/json',
-      },
-    })
-
-    if (res.ok) {
-      const data = await res.json()
-      return { success: true, setting: data }
-    }
-
-    const text = await res.text()
-    return { success: false, error: `Failed to fetch notification setting: ${text}` }
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : 'Network error'
-    return { success: false, error: msg }
+    return await fetch(url, { ...init, signal: controller.signal })
+  } finally {
+    clearTimeout(timer)
   }
 }
 
 /**
- * Configures the Google Business Profile Cloud Pub/Sub notification setting for the specified account.
- * Subscribes to NEW_REVIEW and UPDATED_REVIEW events.
+ * Retrieves the current Google Business Profile account notification settings (Pub/Sub topic and event types)
+ * using the official My Business Notifications API v1 (https://mybusinessnotifications.googleapis.com/v1).
+ * Never masks primary 400/401/403/429 responses with deprecated endpoint fallbacks.
+ */
+export async function getGoogleAccountNotificationSetting(
+  accessToken: string,
+  accountName: string,
+  options?: { timeoutMs?: number }
+): Promise<GoogleNotificationSettingResult> {
+  const normalizedAccount = normalizeNotificationAccountPath(accountName)
+  if (!normalizedAccount) {
+    return {
+      success: false,
+      httpStatus: 400,
+      errorCode: 'INVALID_ACCOUNT_ID',
+      error: 'Invalid Google Business Profile account identifier.',
+      endpointUsed: 'mybusinessnotifications_v1',
+    }
+  }
+
+  const timeoutMs = options?.timeoutMs ?? 15_000
+
+  // 1. Official Google My Business Notifications API v1 (Primary)
+  let primaryFailure: GoogleNotificationSettingResult | null = null
+  try {
+    const notifyUrl = `https://mybusinessnotifications.googleapis.com/v1/${normalizedAccount}/notificationSetting`
+    const res = await fetchWithTimeout(
+      notifyUrl,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: 'application/json',
+        },
+      },
+      timeoutMs
+    )
+
+    if (res.ok) {
+      const data = (await res.json()) as GoogleNotificationSetting
+      return {
+        success: true,
+        setting: data,
+        httpStatus: res.status,
+        endpointUsed: 'mybusinessnotifications_v1',
+      }
+    }
+
+    const rawText = await res.text()
+    const parsed = parseGoogleErrorResponse(rawText, res.status)
+    primaryFailure = {
+      success: false,
+      httpStatus: res.status,
+      errorCode: parsed.errorCode,
+      error: parsed.message,
+      endpointUsed: 'mybusinessnotifications_v1',
+    }
+
+    // Never mask primary client/auth/permission/rate-limit errors with deprecated v4 fallback
+    if (res.status === 400 || res.status === 401 || res.status === 403 || res.status === 429) {
+      return primaryFailure
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Network error calling Notifications API v1'
+    primaryFailure = {
+      success: false,
+      httpStatus: 503,
+      errorCode: 'NETWORK_ERROR',
+      error: msg,
+      endpointUsed: 'mybusinessnotifications_v1',
+    }
+  }
+
+  // 2. Fallback to GMB v4 ONLY if primary returned 404 (unsupported path) or 5xx/transport error
+  if (primaryFailure && primaryFailure.httpStatus === 404) {
+    try {
+      const v4Url = `https://mybusiness.googleapis.com/v4/${normalizedAccount}/notificationSetting`
+      const res = await fetchWithTimeout(
+        v4Url,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            Accept: 'application/json',
+          },
+        },
+        timeoutMs
+      )
+
+      if (res.ok) {
+        const data = (await res.json()) as GoogleNotificationSetting
+        return {
+          success: true,
+          setting: data,
+          httpStatus: res.status,
+          endpointUsed: 'mybusiness_v4',
+        }
+      }
+    } catch {
+      // Preserve primary Notifications v1 diagnostic below
+    }
+  }
+
+  return (
+    primaryFailure || {
+      success: false,
+      httpStatus: 500,
+      errorCode: 'UNKNOWN_ERROR',
+      error: 'Failed to fetch notification setting.',
+      endpointUsed: 'mybusinessnotifications_v1',
+    }
+  )
+}
+
+export interface UpdateNotificationSettingOptions {
+  updateMask?: NotificationUpdateMaskField[]
+  timeoutMs?: number
+}
+
+/**
+ * Configures the Google Business Profile Cloud Pub/Sub notification setting via the official
+ * My Business Notifications API v1 (PATCH accounts/{accountId}/notificationSetting?updateMask=...).
+ *
+ * Pre-flight safety invariants:
+ * - Never sends an empty pubsubTopic or malformed topic resource path.
+ * - Never sends an empty notificationTypes array (which would disable merchant notifications).
+ * - Always requires NEW_REVIEW and UPDATED_REVIEW when notificationTypes is updated.
+ * - Uses the smallest requested updateMask ('pubsubTopic', 'notificationTypes', or both).
+ * - Never masks primary 400/401/403/429 responses with deprecated fallbacks.
  */
 export async function updateGoogleAccountNotificationSetting(
   accessToken: string,
   accountName: string,
   pubsubTopic: string,
-  notificationTypes: string[] = ['NEW_REVIEW', 'UPDATED_REVIEW']
-): Promise<{ success: boolean; setting?: GoogleNotificationSetting; error?: string }> {
-  const normalizedAccount = accountName.startsWith('accounts/') ? accountName : `accounts/${accountName}`
-
-  // 1. Try Google My Business Account Management API v1 PATCH
-  try {
-    const v1Url = `https://mybusinessaccountmanagement.googleapis.com/v1/${normalizedAccount}/notificationSetting?updateMask=pubsubTopic,notificationTypes`
-    const res = await fetch(v1Url, {
-      method: 'PATCH',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
-      body: JSON.stringify({
-        name: `${normalizedAccount}/notificationSetting`,
-        pubsubTopic,
-        notificationTypes,
-      }),
-    })
-
-    if (res.ok) {
-      const data = await res.json()
-      return { success: true, setting: data }
+  notificationTypes: string[] = ['NEW_REVIEW', 'UPDATED_REVIEW'],
+  options?: UpdateNotificationSettingOptions
+): Promise<GoogleNotificationSettingResult> {
+  const normalizedAccount = normalizeNotificationAccountPath(accountName)
+  if (!normalizedAccount) {
+    return {
+      success: false,
+      httpStatus: 400,
+      errorCode: 'INVALID_ACCOUNT_ID',
+      error: 'Invalid Google Business Profile account identifier.',
+      endpointUsed: 'mybusinessnotifications_v1',
     }
-  } catch {
-    // Continue to fallback
   }
 
-  // 2. Fallback to GMB v4 notificationSetting PUT
+  const maskFields: NotificationUpdateMaskField[] =
+    options?.updateMask && options.updateMask.length > 0
+      ? Array.from(new Set(options.updateMask))
+      : ['pubsubTopic', 'notificationTypes']
+
+  const updateTopic = maskFields.includes('pubsubTopic')
+  const updateTypes = maskFields.includes('notificationTypes')
+
+  const cleanTopic = (pubsubTopic || '').trim()
+  if (updateTopic && (!cleanTopic || !VALID_GBP_PUBSUB_TOPIC_REGEX.test(cleanTopic))) {
+    return {
+      success: false,
+      httpStatus: 400,
+      errorCode: 'INVALID_PUBSUB_TOPIC',
+      error: 'Refused PATCH: pubsubTopic must be a valid non-empty Google Cloud Pub/Sub topic resource name.',
+      endpointUsed: 'mybusinessnotifications_v1',
+    }
+  }
+
+  const cleanTypes = Array.from(
+    new Set(
+      (notificationTypes || [])
+        .map((t) => (typeof t === 'string' ? t.trim() : ''))
+        .filter((t) => t.length > 0 && t !== 'NOTIFICATION_TYPE_UNSPECIFIED')
+    )
+  )
+
+  if (updateTypes) {
+    if (
+      cleanTypes.length === 0 ||
+      !cleanTypes.includes('NEW_REVIEW') ||
+      !cleanTypes.includes('UPDATED_REVIEW')
+    ) {
+      return {
+        success: false,
+        httpStatus: 400,
+        errorCode: 'INVALID_NOTIFICATION_TYPES',
+        error: 'Refused PATCH: notificationTypes must be non-empty and include both NEW_REVIEW and UPDATED_REVIEW.',
+        endpointUsed: 'mybusinessnotifications_v1',
+      }
+    }
+  }
+
+  const resourceName = `${normalizedAccount}/notificationSetting`
+  const requestBody: GoogleNotificationSetting = { name: resourceName }
+  if (updateTopic) {
+    requestBody.pubsubTopic = cleanTopic
+  }
+  if (updateTypes) {
+    requestBody.notificationTypes = cleanTypes
+  }
+
+  const updateMaskQuery = maskFields.join(',')
+  const timeoutMs = options?.timeoutMs ?? 15_000
+
   try {
-    const v4Url = `https://mybusiness.googleapis.com/v4/${normalizedAccount}/notificationSetting`
-    const res = await fetch(v4Url, {
-      method: 'PUT',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
+    const notifyUrl = `https://mybusinessnotifications.googleapis.com/v1/${resourceName}?updateMask=${encodeURIComponent(updateMaskQuery)}`
+    const res = await fetchWithTimeout(
+      notifyUrl,
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+        },
+        body: JSON.stringify(requestBody),
       },
-      body: JSON.stringify({
-        pubsubTopic,
-        notificationTypes,
-      }),
-    })
+      timeoutMs
+    )
 
     if (res.ok) {
-      const data = await res.json()
-      return { success: true, setting: data }
+      const data = (await res.json()) as GoogleNotificationSetting
+      return {
+        success: true,
+        setting: data,
+        httpStatus: res.status,
+        endpointUsed: 'mybusinessnotifications_v1',
+      }
     }
 
-    const text = await res.text()
-    return { success: false, error: `Failed to configure notification setting: ${text}` }
+    const rawText = await res.text()
+    const parsed = parseGoogleErrorResponse(rawText, res.status)
+    return {
+      success: false,
+      httpStatus: res.status,
+      errorCode: parsed.errorCode,
+      error: parsed.message,
+      endpointUsed: 'mybusinessnotifications_v1',
+    }
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : 'Network error'
-    return { success: false, error: msg }
+    const msg = err instanceof Error ? err.message : 'Network error updating notification setting'
+    return {
+      success: false,
+      httpStatus: 503,
+      errorCode: 'NETWORK_ERROR',
+      error: msg,
+      endpointUsed: 'mybusinessnotifications_v1',
+    }
   }
 }
 

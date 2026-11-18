@@ -63,6 +63,7 @@ export interface WorkerRunSummary {
   failed: number
   deadLettered: number
   healthProbesRun: number
+  notificationReconciliationsRun?: number
   errors: Array<{ jobId: string; reviewId: string; error: string }>
 }
 
@@ -1136,6 +1137,20 @@ export async function runScheduledReplyWorker(
             summary.healthProbesRun++
           }
         }
+      }
+
+      // Isolated post-job GBP Pub/Sub notification reconciliation & 24h drift check.
+      // Never delays or breaks scheduled reply job processing.
+      try {
+        const { reconcileWorkspaceNotificationRegistrations } = await import(
+          '@/lib/google-notification-registration'
+        )
+        const reconSummary = await reconcileWorkspaceNotificationRegistrations(supabase, {
+          limit: 5,
+        })
+        summary.notificationReconciliationsRun = reconSummary.scanned
+      } catch (reconErr) {
+        console.warn('Non-blocking notification reconciliation error:', reconErr)
       }
     }
 

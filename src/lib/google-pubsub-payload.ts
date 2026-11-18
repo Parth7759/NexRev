@@ -39,6 +39,7 @@ export interface ParsedGooglePubSubNotification {
   locationResourceName: string
   embeddedReview: EmbeddedReviewObject | null
   hasRequiredIdentifiers: boolean
+  hasConflictingIdentifiers: boolean
   diagnosticSummary: {
     payloadKeys: string[]
     reviewFieldType: string
@@ -192,6 +193,20 @@ export function parseGooglePubSubNotificationPayload(
   const parsedReviewRes = parseReviewResourceName(reviewResourceCandidate)
   const parsedLocationRes = parseLocationResourceName(locationResourceCandidate)
 
+  // Cross-field consistency check: if BOTH review and location resources specify accountId or locationId,
+  // they MUST match (case-insensitively); conflicting identifiers are rejected safely.
+  const accountIdConflict = Boolean(
+    parsedReviewRes.accountId &&
+      parsedLocationRes.accountId &&
+      parsedReviewRes.accountId.toLowerCase() !== parsedLocationRes.accountId.toLowerCase()
+  )
+  const locationIdConflict = Boolean(
+    parsedReviewRes.locationId &&
+      parsedLocationRes.locationId &&
+      parsedReviewRes.locationId.toLowerCase() !== parsedLocationRes.locationId.toLowerCase()
+  )
+  const hasConflictingIdentifiers = accountIdConflict || locationIdConflict
+
   // 4. Resolve clean accountId, locationId, reviewId
   const accountId =
     parsedReviewRes.accountId ||
@@ -246,7 +261,8 @@ export function parseGooglePubSubNotificationPayload(
     rawResourceName: canonicalResourceName,
     locationResourceName: canonicalLocationResourceName,
     embeddedReview,
-    hasRequiredIdentifiers: Boolean(locationId && reviewId),
+    hasRequiredIdentifiers: Boolean(locationId && reviewId && !hasConflictingIdentifiers),
+    hasConflictingIdentifiers,
     diagnosticSummary: {
       payloadKeys: Object.keys(safePayload),
       reviewFieldType: safePayload.review === undefined ? 'undefined' : typeof safePayload.review,
@@ -255,3 +271,4 @@ export function parseGooglePubSubNotificationPayload(
     },
   }
 }
+

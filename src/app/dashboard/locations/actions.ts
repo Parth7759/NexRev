@@ -2,6 +2,7 @@
 
 import { revalidatePath } from 'next/cache'
 import { createClient } from '@/utils/supabase/server'
+import { createAdminClient } from '@/utils/supabase/admin'
 import { verifyWorkspaceMembership } from '@/lib/workspace'
 import {
   getValidGoogleAccessToken,
@@ -10,6 +11,32 @@ import {
   GoogleApiError,
 } from '@/lib/google-business'
 import { syncWorkspaceGoogleReviews } from '@/lib/google-review-sync'
+import {
+  ensureGoogleAccountNotificationsRegistered,
+  confirmGoogleNotificationTopicOverwrite,
+  normalizeGoogleAccountId,
+  normalizeGoogleAccountIdBare,
+  normalizeGoogleLocationIdBare,
+  normalizeGoogleLocationResource,
+  NotificationRegistrationOutcome,
+  NotificationRegistrationStatus,
+  sanitizeGoogleDiagnosticError,
+} from '@/lib/google-notification-registration'
+
+export interface NotificationRegistrationView {
+  status: NotificationRegistrationStatus
+  googleAccountId: string
+  pubsubTopic: string | null
+  existingThirdPartyTopic: string | null
+  notificationTypes: string[]
+  attempts: number
+  maxAttempts: number
+  nextRetryAt: string | null
+  registeredAt: string | null
+  lastVerifiedAt: string | null
+  lastErrorCode: string | null
+  lastErrorMessage: string | null
+}
 
 export interface LocationPageRecord {
   id: string
@@ -36,6 +63,7 @@ export interface LocationPageDataResult {
   }
   activeLocation: LocationPageRecord | null
   connectedLocationsCount: number
+  notificationRegistration: NotificationRegistrationView | null
   error?: string
 }
 
@@ -61,6 +89,7 @@ export interface SelectProfileResult {
   locationId?: string
   name?: string
   reviewsSynced?: number
+  notificationRegistration?: NotificationRegistrationOutcome | null
   message?: string
   error?: string
 }
@@ -105,6 +134,7 @@ export async function getLocationPageDataAction(
       integration: emptyIntegration,
       activeLocation: null,
       connectedLocationsCount: 0,
+      notificationRegistration: null,
       error: 'Workspace ID is required.',
     }
   }
@@ -121,12 +151,13 @@ export async function getLocationPageDataAction(
         integration: emptyIntegration,
         activeLocation: null,
         connectedLocationsCount: 0,
+        notificationRegistration: null,
         error: membershipCheck.error || 'You do not have access to this workspace.',
       }
     }
 
-    // 2. Query google_integrations and locations in parallel
-    const [integrationRes, locationsRes] = await Promise.all([
+    // 2. Query google_integrations, locations, and account-scoped notification registrations in parallel
+    const [integrationRes, locationsRes, notifRegsRes] = await Promise.all([
       supabase
         .from('google_integrations')
         .select('account_name, account_id, expires_at, refresh_token_encrypted, access_token_encrypted, updated_at')
@@ -137,6 +168,10 @@ export async function getLocationPageDataAction(
         .select('id, name, address, phone, google_location_id, google_account_id, google_place_id, is_connected, updated_at')
         .eq('workspace_id', workspaceId)
         .eq('is_connected', true),
+      supabase
+        .from('google_notification_registrations')
+        .select('google_account_id, pubsub_topic, notification_types, status, attempts, max_attempts, next_retry_at, registered_at, last_verified_at, last_error_code, last_error_message, metadata')
+        .eq('workspace_id', workspaceId),
     ])
 
     if (integrationRes.error) {
@@ -146,6 +181,7 @@ export async function getLocationPageDataAction(
         integration: emptyIntegration,
         activeLocation: null,
         connectedLocationsCount: 0,
+        notificationRegistration: null,
         error: `Database error checking Google integration: ${integrationRes.error.message}`,
       }
     }
@@ -157,6 +193,7 @@ export async function getLocationPageDataAction(
         integration: emptyIntegration,
         activeLocation: null,
         connectedLocationsCount: 0,
+        notificationRegistration: null,
         error: `Database error loading locations: ${locationsRes.error.message}`,
       }
     }
@@ -172,6 +209,41 @@ export async function getLocationPageDataAction(
     const connectedLocations = (locationsRes.data || []) as LocationPageRecord[]
     const activeLocation = connectedLocations.length === 1 ? connectedLocations[0] : null
 
+    let notificationRegistration: NotificationRegistrationView | null = null
+    if (activeLocation?.google_account_id && Array.isArray(notifRegsRes.data)) {
+      const targetNormAcc = normalizeGoogleAccountId(activeLocation.google_account_id)
+      const matchedReg = notifRegsRes.data.find(
+        (r) => normalizeGoogleAccountId(r.google_account_id) === targetNormAcc
+      )
+      if (matchedReg) {
+        const metaObj =
+          matchedReg.metadata &&
+          typeof matchedReg.metadata === 'object' &&
+          !Array.isArray(matchedReg.metadata)
+            ? (matchedReg.metadata as Record<string, unknown>)
+            : {}
+        notificationRegistration = {
+          status: matchedReg.status,
+          googleAccountId: matchedReg.google_account_id,
+          pubsubTopic: matchedReg.pubsub_topic,
+          existingThirdPartyTopic:
+            typeof metaObj.existingPubsubTopic === 'string'
+              ? metaObj.existingPubsubTopic
+              : matchedReg.status === 'topic_conflict'
+                ? matchedReg.pubsub_topic
+                : null,
+          notificationTypes: matchedReg.notification_types || [],
+          attempts: matchedReg.attempts,
+          maxAttempts: matchedReg.max_attempts,
+          nextRetryAt: matchedReg.next_retry_at,
+          registeredAt: matchedReg.registered_at,
+          lastVerifiedAt: matchedReg.last_verified_at,
+          lastErrorCode: matchedReg.last_error_code,
+          lastErrorMessage: matchedReg.last_error_message,
+        }
+      }
+    }
+
     return {
       success: true,
       workspaceId,
@@ -185,6 +257,7 @@ export async function getLocationPageDataAction(
       },
       activeLocation,
       connectedLocationsCount: connectedLocations.length,
+      notificationRegistration,
     }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Failed to fetch location data.'
@@ -194,6 +267,7 @@ export async function getLocationPageDataAction(
       integration: emptyIntegration,
       activeLocation: null,
       connectedLocationsCount: 0,
+      notificationRegistration: null,
       error: msg,
     }
   }
@@ -283,18 +357,25 @@ export async function selectSingleGoogleProfileAction(
   workspaceId: string,
   profile: GoogleLocationProfile
 ): Promise<SelectProfileResult> {
-  if (!workspaceId || !profile || !profile.googleLocationId) {
+  if (!workspaceId || !profile || !profile.googleLocationId || !profile.googleAccountId) {
     return {
       success: false,
-      error: 'Workspace ID and valid profile data are required.',
+      error: 'Workspace ID and valid Google Business Profile account/location data are required.',
     }
   }
 
   try {
     const supabase = await createClient()
-    const { data: { user } } = await supabase.auth.getUser()
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
 
-    // 1. Verify workspace admin/owner role
+    if (authError || !user) {
+      return {
+        success: false,
+        error: 'You must be signed in to connect a business profile.',
+      }
+    }
+
+    // 1. Verify workspace owner/admin role
     const membershipCheck = await verifyWorkspaceMembership(supabase, workspaceId, [
       'owner',
       'admin',
@@ -308,82 +389,110 @@ export async function selectSingleGoogleProfileAction(
       }
     }
 
-    // 2. Deactivate any existing connected locations for this workspace
-    // Ensures strictly ONE connected business profile per workspace
-    await supabase
-      .from('locations')
-      .update({
-        is_connected: false,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('workspace_id', workspaceId)
-
-    // 3. Upsert ONLY the selected profile into public.locations with is_connected = true
-    const { data: existingLoc } = await supabase
-      .from('locations')
-      .select('id')
-      .eq('workspace_id', workspaceId)
-      .eq('google_location_id', profile.googleLocationId)
-      .maybeSingle()
-
-    let locationDbId: string
-
-    if (existingLoc?.id) {
-      const { data: updated, error: updateError } = await supabase
-        .from('locations')
-        .update({
-          name: profile.name,
-          address: profile.address,
-          phone: profile.phone,
-          google_place_id: profile.googlePlaceId,
-          google_account_id: profile.googleAccountId,
-          is_connected: true,
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', existingLoc.id)
-        .select('id')
-        .single()
-
-      if (updateError || !updated) {
-        throw new Error(updateError?.message || 'Failed to update location record.')
+    // 2. Verify live Google OAuth ownership of the selected (googleAccountId, googleLocationId)
+    // Never trust client-supplied IDs and never permit cross-workspace location-existence probing.
+    const requestedAccBare = normalizeGoogleAccountIdBare(profile.googleAccountId)
+    const requestedLocBare = normalizeGoogleLocationIdBare(profile.googleLocationId)
+    if (!requestedAccBare || !requestedLocBare) {
+      return {
+        success: false,
+        error: 'Invalid Google Business Profile account or location identifier.',
       }
-      locationDbId = updated.id
-    } else {
-      const { data: inserted, error: insertError } = await supabase
-        .from('locations')
-        .insert({
-          workspace_id: workspaceId,
-          name: profile.name,
-          address: profile.address,
-          phone: profile.phone,
-          google_place_id: profile.googlePlaceId,
-          google_account_id: profile.googleAccountId,
-          google_location_id: profile.googleLocationId,
-          is_connected: true,
-        })
-        .select('id')
-        .single()
-
-      if (insertError || !inserted) {
-        throw new Error(insertError?.message || 'Failed to save selected location.')
-      }
-      locationDbId = inserted.id
     }
 
-    // 4. Update google_integrations with selected account ID and timestamp
-    await supabase
-      .from('google_integrations')
-      .update({
-        account_id: profile.googleAccountId,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('workspace_id', workspaceId)
+    const { accessToken } = await getValidGoogleAccessToken(supabase, workspaceId)
+    const liveAccounts = await fetchGoogleAccounts(accessToken)
+    const matchedAccount = liveAccounts.find(
+      (acc) => normalizeGoogleAccountIdBare(acc.name) === requestedAccBare
+    )
+    if (!matchedAccount) {
+      return {
+        success: false,
+        error:
+          'The selected Google Business Profile account could not be verified under your connected Google account.',
+      }
+    }
 
-    // 5. Sync reviews strictly for this newly selected profile
+    const liveLocations = await fetchGoogleLocations(accessToken, matchedAccount.name)
+    const verifiedProfile = liveLocations.find(
+      (loc) => normalizeGoogleLocationIdBare(loc.googleLocationId) === requestedLocBare
+    )
+    if (!verifiedProfile) {
+      return {
+        success: false,
+        error:
+          'The selected Google Business Profile location could not be verified under your connected Google account.',
+      }
+    }
+
+    const normalizedAccountId = normalizeGoogleAccountId(
+      verifiedProfile.googleAccountId || matchedAccount.name
+    )
+    const normalizedLocationId = normalizeGoogleLocationResource(verifiedProfile.googleLocationId)
+
+    // 3. Atomically claim and activate ONLY this location via service_role-only RPC
+    // Enforces database-level cross-workspace exclusivity with privacy-safe conflict response.
+    const adminSupabase = createAdminClient()
+    const { data: claimData, error: claimErr } = await adminSupabase.rpc(
+      'claim_and_activate_google_location',
+      {
+        p_actor_user_id: user.id,
+        p_workspace_id: workspaceId,
+        p_google_account_id: normalizedAccountId,
+        p_google_location_id: normalizedLocationId,
+        p_name: verifiedProfile.name,
+        p_address: verifiedProfile.address,
+        p_phone: verifiedProfile.phone,
+        p_google_place_id: verifiedProfile.googlePlaceId,
+      }
+    )
+
+    if (claimErr || !claimData || typeof claimData !== 'object' || Array.isArray(claimData)) {
+      throw new Error(claimErr?.message || 'Failed to activate selected business profile.')
+    }
+
+    const claimResult = claimData as Record<string, unknown>
+    if (claimResult.unauthorized === true) {
+      return {
+        success: false,
+        error: 'You do not have administrative permission to configure integrations for this workspace.',
+      }
+    }
+
+    if (claimResult.conflict === true || claimResult.claimed !== true) {
+      return {
+        success: false,
+        error:
+          'This Google Business Profile location is already actively connected to another workspace. Disconnect it there first, then try again.',
+      }
+    }
+
+    const locationDbId = String(claimResult.location_id || '')
+
+    // 4. Non-blocking idempotent account-level Pub/Sub notification auto-registration
+    // Failures persist diagnostics cleanly and NEVER break Google connection or location activation.
+    let notificationRegistration: NotificationRegistrationOutcome | null = null
+    try {
+      notificationRegistration = await ensureGoogleAccountNotificationsRegistered(adminSupabase, {
+        workspaceId,
+        googleAccountId: normalizedAccountId,
+        source: 'auto_registration',
+      })
+    } catch (notifErr: unknown) {
+      console.warn(
+        'Non-blocking GBP Pub/Sub auto-registration notice:',
+        sanitizeGoogleDiagnosticError(
+          notifErr instanceof Error ? notifErr.message : 'Notification registration error'
+        )
+      )
+    }
+
+    // 5. Sync historical reviews strictly for this newly selected profile (never inline auto-reply)
     let reviewsCount = 0
     try {
       const syncRes = await syncWorkspaceGoogleReviews(supabase, workspaceId, {
-        userId: user?.id || null,
+        userId: user.id,
+        skipAutoReply: true,
       })
       reviewsCount = syncRes.totalFetched
     } catch (syncErr) {
@@ -398,9 +507,10 @@ export async function selectSingleGoogleProfileAction(
     return {
       success: true,
       locationId: locationDbId,
-      name: profile.name,
+      name: verifiedProfile.name,
       reviewsSynced: reviewsCount,
-      message: `Successfully connected "${profile.name}".`,
+      notificationRegistration,
+      message: `Successfully connected "${verifiedProfile.name}".`,
     }
   } catch (err: unknown) {
     if (err instanceof GoogleApiError) {
@@ -408,6 +518,178 @@ export async function selectSingleGoogleProfileAction(
     }
     const msg = err instanceof Error ? err.message : 'Failed to connect selected business profile.'
     return { success: false, error: msg }
+  }
+}
+
+/**
+ * 2b. Retries or reconciles Google Business Profile Pub/Sub notification registration
+ * for the workspace's active connected Google account without requiring OAuth reconnect.
+ */
+export async function retryGoogleNotificationRegistrationAction(
+  workspaceId: string
+): Promise<{
+  success: boolean
+  result?: NotificationRegistrationOutcome
+  message?: string
+  error?: string
+}> {
+  if (!workspaceId) {
+    return { success: false, error: 'Workspace ID is required.' }
+  }
+
+  try {
+    const supabase = await createClient()
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    if (authError || !user) {
+      return { success: false, error: 'You must be signed in to manage notifications.' }
+    }
+
+    const membershipCheck = await verifyWorkspaceMembership(supabase, workspaceId, [
+      'owner',
+      'admin',
+    ])
+    if (!membershipCheck.isMember) {
+      return {
+        success: false,
+        error:
+          membershipCheck.error ||
+          'Only workspace owners and administrators can manage real-time notifications.',
+      }
+    }
+
+    const { data: activeLocs } = await supabase
+      .from('locations')
+      .select('id, google_account_id')
+      .eq('workspace_id', workspaceId)
+      .eq('is_connected', true)
+
+    if (!activeLocs || activeLocs.length !== 1 || !activeLocs[0].google_account_id) {
+      return {
+        success: false,
+        error: 'An active connected Google Business Profile location is required first.',
+      }
+    }
+
+    const adminSupabase = createAdminClient()
+    const result = await ensureGoogleAccountNotificationsRegistered(adminSupabase, {
+      workspaceId,
+      googleAccountId: activeLocs[0].google_account_id,
+      source: 'manual_retry',
+      forceVerify: true,
+      resetAttempts: true,
+    })
+
+    revalidatePath('/dashboard/locations')
+    revalidatePath('/dashboard/reviews')
+
+    if (!result.success) {
+      return {
+        success: false,
+        result,
+        error: result.errorMessage || 'Real-time notification registration did not complete.',
+      }
+    }
+
+    return {
+      success: true,
+      result,
+      message: 'Real-time Google Business Profile notifications are active and verified.',
+    }
+  } catch (err: unknown) {
+    return {
+      success: false,
+      error: sanitizeGoogleDiagnosticError(
+        err instanceof Error ? err.message : 'Failed to retry notification registration.'
+      ),
+    }
+  }
+}
+
+/**
+ * 2c. Explicit owner/admin confirmation to replace an existing third-party Pub/Sub topic
+ * on the workspace's active GBP account. Verifies expectedCurrentTopic against a fresh Google GET
+ * under a fenced account lock before issuing minimal PATCH.
+ */
+export async function confirmGoogleNotificationTopicOverwriteAction(
+  workspaceId: string,
+  expectedCurrentTopic: string
+): Promise<{
+  success: boolean
+  result?: NotificationRegistrationOutcome
+  message?: string
+  error?: string
+}> {
+  if (!workspaceId || !expectedCurrentTopic || !expectedCurrentTopic.trim()) {
+    return {
+      success: false,
+      error: 'Workspace ID and expected existing topic are required to confirm replacement.',
+    }
+  }
+
+  try {
+    const supabase = await createClient()
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    if (authError || !user) {
+      return { success: false, error: 'You must be signed in to confirm topic replacement.' }
+    }
+
+    const membershipCheck = await verifyWorkspaceMembership(supabase, workspaceId, [
+      'owner',
+      'admin',
+    ])
+    if (!membershipCheck.isMember) {
+      return {
+        success: false,
+        error:
+          membershipCheck.error ||
+          'Only workspace owners and administrators can confirm Pub/Sub topic replacement.',
+      }
+    }
+
+    const { data: activeLocs } = await supabase
+      .from('locations')
+      .select('id, google_account_id')
+      .eq('workspace_id', workspaceId)
+      .eq('is_connected', true)
+
+    if (!activeLocs || activeLocs.length !== 1 || !activeLocs[0].google_account_id) {
+      return {
+        success: false,
+        error: 'An active connected Google Business Profile location is required.',
+      }
+    }
+
+    const adminSupabase = createAdminClient()
+    const result = await confirmGoogleNotificationTopicOverwrite(adminSupabase, {
+      workspaceId,
+      googleAccountId: activeLocs[0].google_account_id,
+      actorUserId: user.id,
+      expectedCurrentTopic: expectedCurrentTopic.trim(),
+    })
+
+    revalidatePath('/dashboard/locations')
+    revalidatePath('/dashboard/reviews')
+
+    if (!result.success) {
+      return {
+        success: false,
+        result,
+        error: result.errorMessage || 'Could not replace existing Pub/Sub topic.',
+      }
+    }
+
+    return {
+      success: true,
+      result,
+      message: 'Google Business Profile Pub/Sub topic updated and verified.',
+    }
+  } catch (err: unknown) {
+    return {
+      success: false,
+      error: sanitizeGoogleDiagnosticError(
+        err instanceof Error ? err.message : 'Failed to replace Pub/Sub topic.'
+      ),
+    }
   }
 }
 

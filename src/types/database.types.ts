@@ -672,6 +672,99 @@ export interface Database {
         }
         Relationships: []
       }
+      google_notification_registrations: {
+        Row: {
+          id: string
+          workspace_id: string
+          google_account_id: string
+          pubsub_topic: string | null
+          notification_types: string[]
+          status: 'pending' | 'registered' | 'failed' | 'skipped_unconfigured' | 'topic_conflict'
+          source: 'auto_registration' | 'reconciled_existing' | 'manual_retry' | 'worker_retry' | 'explicit_overwrite'
+          attempts: number
+          max_attempts: number
+          next_retry_at: string | null
+          last_attempt_at: string | null
+          registered_at: string | null
+          last_verified_at: string | null
+          last_http_status: number | null
+          last_error_code: string | null
+          last_error_message: string | null
+          metadata: Json
+          created_at: string
+          updated_at: string
+        }
+        Insert: {
+          id?: string
+          workspace_id: string
+          google_account_id: string
+          pubsub_topic?: string | null
+          notification_types?: string[]
+          status?: 'pending' | 'registered' | 'failed' | 'skipped_unconfigured' | 'topic_conflict'
+          source?: 'auto_registration' | 'reconciled_existing' | 'manual_retry' | 'worker_retry' | 'explicit_overwrite'
+          attempts?: number
+          max_attempts?: number
+          next_retry_at?: string | null
+          last_attempt_at?: string | null
+          registered_at?: string | null
+          last_verified_at?: string | null
+          last_http_status?: number | null
+          last_error_code?: string | null
+          last_error_message?: string | null
+          metadata?: Json
+          created_at?: string
+          updated_at?: string
+        }
+        Update: {
+          id?: string
+          workspace_id?: string
+          google_account_id?: string
+          pubsub_topic?: string | null
+          notification_types?: string[]
+          status?: 'pending' | 'registered' | 'failed' | 'skipped_unconfigured' | 'topic_conflict'
+          source?: 'auto_registration' | 'reconciled_existing' | 'manual_retry' | 'worker_retry' | 'explicit_overwrite'
+          attempts?: number
+          max_attempts?: number
+          next_retry_at?: string | null
+          last_attempt_at?: string | null
+          registered_at?: string | null
+          last_verified_at?: string | null
+          last_http_status?: number | null
+          last_error_code?: string | null
+          last_error_message?: string | null
+          metadata?: Json
+          created_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      google_account_registration_locks: {
+        Row: {
+          google_account_id: string
+          lock_owner: string
+          fence_token: number
+          locked_at: string
+          lease_expires_at: string
+          updated_at: string
+        }
+        Insert: {
+          google_account_id: string
+          lock_owner: string
+          fence_token?: number
+          locked_at?: string
+          lease_expires_at: string
+          updated_at?: string
+        }
+        Update: {
+          google_account_id?: string
+          lock_owner?: string
+          fence_token?: number
+          locked_at?: string
+          lease_expires_at?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
@@ -730,6 +823,44 @@ export interface Database {
       get_staging_cron_diagnostics: {
         Args: Record<PropertyKey, never>
         Returns: Json
+      }
+      claim_and_activate_google_location: {
+        Args: {
+          p_actor_user_id: string
+          p_workspace_id: string
+          p_google_account_id: string
+          p_google_location_id: string
+          p_name: string
+          p_address?: string | null
+          p_phone?: string | null
+          p_google_place_id?: string | null
+        }
+        Returns: Json
+      }
+      acquire_google_account_registration_lock: {
+        Args: {
+          p_google_account_id: string
+          p_lock_owner: string
+          p_lease_seconds?: number
+        }
+        Returns: Json
+      }
+      renew_google_account_registration_lock: {
+        Args: {
+          p_google_account_id: string
+          p_lock_owner: string
+          p_fence_token: number
+          p_lease_seconds?: number
+        }
+        Returns: boolean
+      }
+      release_google_account_registration_lock: {
+        Args: {
+          p_google_account_id: string
+          p_lock_owner: string
+          p_fence_token: number
+        }
+        Returns: boolean
       }
     }
     Enums: {

@@ -34,9 +34,12 @@ import {
   selectSingleGoogleProfileAction,
   disconnectGoogleProfileAction,
   syncActiveLocationAction,
+  retryGoogleNotificationRegistrationAction,
+  confirmGoogleNotificationTopicOverwriteAction,
   GoogleLocationProfile,
   SyncLocationsResult,
   LocationPageRecord,
+  NotificationRegistrationView,
 } from "./actions";
 
 interface GoogleIntegrationState {
@@ -62,6 +65,8 @@ function LocationsContent() {
 
   const [integration, setIntegration] = useState<GoogleIntegrationState>({ isConnected: false });
   const [activeLocation, setActiveLocation] = useState<LocationPageRecord | null>(null);
+  const [notificationRegistration, setNotificationRegistration] =
+    useState<NotificationRegistrationView | null>(null);
   const [isLoadingData, setIsLoadingData] = useState(true);
   const [isConnecting, setIsConnecting] = useState(false);
 
@@ -76,6 +81,9 @@ function LocationsContent() {
   const [isSelectingId, setIsSelectingId] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isDisconnecting, setIsDisconnecting] = useState(false);
+  const [isRetryingNotif, setIsRetryingNotif] = useState(false);
+  const [showOverwriteModal, setShowOverwriteModal] = useState(false);
+  const [isConfirmingOverwrite, setIsConfirmingOverwrite] = useState(false);
 
   // User notifications
   const [actionSuccessNotice, setActionSuccessNotice] = useState<string | null>(null);
@@ -111,6 +119,7 @@ function LocationsContent() {
         accountName: res.integration.accountName,
         updatedAt: res.integration.updatedAt,
       });
+      setNotificationRegistration(res.notificationRegistration ?? null);
 
       if (res.activeLocation) {
         setActiveLocation(res.activeLocation);
@@ -262,6 +271,72 @@ function LocationsContent() {
       setActionErrorNotice(msg);
     } finally {
       setIsDisconnecting(false);
+    }
+  };
+
+  // Retry real-time Pub/Sub notification registration without requiring Google OAuth reconnect
+  const handleRetryNotifications = async () => {
+    if (!activeWorkspaceId || isRetryingNotif) return;
+    setIsRetryingNotif(true);
+    setActionErrorNotice(null);
+    setActionSuccessNotice(null);
+
+    try {
+      const res = await retryGoogleNotificationRegistrationAction(activeWorkspaceId);
+      if (res.success) {
+        setActionSuccessNotice(
+          res.message || "Real-time Google Business Profile notifications are active."
+        );
+      } else {
+        setActionErrorNotice(
+          res.error || "Could not complete real-time notification registration."
+        );
+      }
+      await loadData();
+    } catch (err: unknown) {
+      setActionErrorNotice(
+        err instanceof Error ? err.message : "Failed to retry real-time notifications."
+      );
+    } finally {
+      setIsRetryingNotif(false);
+    }
+  };
+
+  // Explicit owner/admin confirmation to replace an existing external Pub/Sub topic
+  const handleConfirmTopicOverwrite = async () => {
+    if (
+      !activeWorkspaceId ||
+      !notificationRegistration?.existingThirdPartyTopic ||
+      isConfirmingOverwrite
+    ) {
+      return;
+    }
+
+    setIsConfirmingOverwrite(true);
+    setActionErrorNotice(null);
+    setActionSuccessNotice(null);
+
+    try {
+      const res = await confirmGoogleNotificationTopicOverwriteAction(
+        activeWorkspaceId,
+        notificationRegistration.existingThirdPartyTopic
+      );
+      setShowOverwriteModal(false);
+      if (res.success) {
+        setActionSuccessNotice(
+          res.message || "Google Business Profile Pub/Sub topic updated and verified."
+        );
+      } else {
+        setActionErrorNotice(res.error || "Failed to replace existing Pub/Sub topic.");
+      }
+      await loadData();
+    } catch (err: unknown) {
+      setShowOverwriteModal(false);
+      setActionErrorNotice(
+        err instanceof Error ? err.message : "Failed to replace Pub/Sub topic."
+      );
+    } finally {
+      setIsConfirmingOverwrite(false);
     }
   };
 
@@ -922,6 +997,189 @@ function LocationsContent() {
                   </div>
                 </div>
               </div>
+
+              {/* Real-Time Google Business Profile Pub/Sub Notification Status */}
+              {(() => {
+                const reg = notificationRegistration;
+                const status = reg?.status ?? "pending";
+                const isPendingRetry = status === "failed" && Boolean(reg?.nextRetryAt);
+
+                const badgeConfig =
+                  status === "registered"
+                    ? { label: "Active", cls: "border-emerald-200 bg-emerald-50 text-emerald-700" }
+                    : status === "topic_conflict"
+                      ? { label: "Topic Conflict", cls: "border-amber-300 bg-amber-50 text-amber-800" }
+                      : status === "skipped_unconfigured"
+                        ? { label: "Not Configured", cls: "border-slate-300 bg-slate-100 text-slate-700" }
+                        : isPendingRetry
+                          ? { label: "Pending Retry", cls: "border-amber-200 bg-amber-50 text-amber-700" }
+                          : status === "failed"
+                            ? { label: "Registration Failed", cls: "border-rose-200 bg-rose-50 text-rose-700" }
+                            : { label: "Pending", cls: "border-blue-200 bg-blue-50 text-blue-700" };
+
+                const isRevoked = reg?.lastErrorCode === "revoked";
+                const isIamMissing = reg?.lastErrorCode === "pubsub_iam_missing";
+
+                return (
+                  <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-2.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <ShieldCheck className="w-4 h-4 text-blue-600 shrink-0" />
+                        <span className="text-xs font-semibold text-slate-900">
+                          Real-Time Review Notifications (Google Pub/Sub)
+                        </span>
+                      </div>
+                      <Badge className={`text-[11px] font-medium ${badgeConfig.cls}`}>
+                        {badgeConfig.label}
+                      </Badge>
+                    </div>
+
+                    {status === "registered" && (
+                      <p className="text-xs text-slate-600">
+                        Account-level real-time notifications (<code className="font-mono text-[11px]">NEW_REVIEW</code>,{" "}
+                        <code className="font-mono text-[11px]">UPDATED_REVIEW</code>) are active
+                        {reg?.lastVerifiedAt
+                          ? ` (verified ${new Date(reg.lastVerifiedAt).toLocaleString(undefined, {
+                              month: "short",
+                              day: "numeric",
+                              hour: "2-digit",
+                              minute: "2-digit",
+                            })})`
+                          : ""}
+                        .
+                      </p>
+                    )}
+
+                    {status === "pending" && (
+                      <p className="text-xs text-slate-600">
+                        Real-time notification registration is queued and will complete automatically in the background.
+                      </p>
+                    )}
+
+                    {status === "skipped_unconfigured" && (
+                      <p className="text-xs text-slate-600">
+                        Real-time Pub/Sub topic is not configured in this environment yet. Once configured, notifications will register automatically without reconnecting Google.
+                      </p>
+                    )}
+
+                    {status === "failed" && (
+                      <div className="space-y-1.5 text-xs">
+                        {isRevoked ? (
+                          <p className="text-rose-700 font-medium">
+                            Google OAuth authorization has expired or been revoked. Click &ldquo;Connect Another Google Account&rdquo; below to reconnect and restore real-time notifications.
+                          </p>
+                        ) : isIamMissing ? (
+                          <p className="text-amber-800 font-medium">
+                            Google Cloud Pub/Sub IAM permission is missing: grant <code className="font-mono text-[11px]">roles/pubsub.publisher</code> to{" "}
+                            <code className="font-mono text-[11px]">mybusiness-api-pubsub@system.gserviceaccount.com</code> on the configured topic, then click Retry.
+                          </p>
+                        ) : (
+                          <p className="text-slate-600">
+                            {reg?.lastErrorMessage || "Temporary error communicating with Google Notifications API."}
+                            {isPendingRetry && reg?.nextRetryAt
+                              ? ` Automatic retry scheduled for ${new Date(reg.nextRetryAt).toLocaleTimeString(undefined, {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })}.`
+                              : ""}
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {status === "topic_conflict" && (
+                      <div className="space-y-2 text-xs text-amber-900 bg-amber-50/70 border border-amber-200 rounded-lg p-3">
+                        <p className="font-medium">
+                          This Google Business Profile account is currently linked to another Pub/Sub topic:
+                        </p>
+                        <code className="block font-mono text-[11px] bg-white px-2 py-1 rounded border border-amber-200 break-all">
+                          {reg?.existingThirdPartyTopic || reg?.pubsubTopic || "(unknown topic)"}
+                        </code>
+                        <p className="text-amber-800">
+                          NexRep will never overwrite an external topic silently. Confirm replacement only if you want real-time review events for this Google account routed to NexRep.
+                        </p>
+                      </div>
+                    )}
+
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      {status !== "registered" && status !== "topic_conflict" && !isRevoked && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={handleRetryNotifications}
+                          disabled={isRetryingNotif || isSyncing}
+                          className="h-7 px-3 text-xs font-medium border-slate-200 text-slate-700 hover:bg-slate-50"
+                        >
+                          <RefreshCw className={`mr-1.5 h-3 w-3 ${isRetryingNotif ? "animate-spin" : ""}`} />
+                          {isRetryingNotif ? "Retrying..." : "Retry Real-Time Notifications"}
+                        </Button>
+                      )}
+
+                      {status === "topic_conflict" && reg?.existingThirdPartyTopic && (
+                        <Button
+                          size="sm"
+                          onClick={() => setShowOverwriteModal(true)}
+                          disabled={isConfirmingOverwrite}
+                          className="h-7 px-3 text-xs font-medium bg-amber-600 hover:bg-amber-700 text-white"
+                        >
+                          Confirm Topic Replacement
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Explicit Third-Party Topic Overwrite Confirmation Modal */}
+              {showOverwriteModal && notificationRegistration?.existingThirdPartyTopic && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 backdrop-blur-xs p-4">
+                  <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-lg w-full p-5 space-y-4">
+                    <div className="flex items-start justify-between gap-2">
+                      <h3 className="text-sm font-bold text-slate-900">
+                        Confirm Google Pub/Sub Topic Replacement
+                      </h3>
+                      <button
+                        type="button"
+                        onClick={() => setShowOverwriteModal(false)}
+                        className="text-slate-400 hover:text-slate-600"
+                        aria-label="Close confirmation dialog"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                    <div className="space-y-2 text-xs text-slate-600 leading-relaxed">
+                      <p>
+                        A Google Business Profile account can only publish real-time notifications to one Pub/Sub topic at a time. Replacing the current topic will redirect future notifications from:
+                      </p>
+                      <code className="block font-mono text-[11px] bg-slate-50 p-2 rounded border border-slate-200 break-all text-slate-800">
+                        {notificationRegistration.existingThirdPartyTopic}
+                      </code>
+                      <p>
+                        All existing valid notification event types will be preserved alongside <code className="font-mono">NEW_REVIEW</code> and <code className="font-mono">UPDATED_REVIEW</code>. If the external topic changed since this dialog opened, the operation will abort safely.
+                      </p>
+                    </div>
+                    <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setShowOverwriteModal(false)}
+                        disabled={isConfirmingOverwrite}
+                        className="text-xs"
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        size="sm"
+                        onClick={handleConfirmTopicOverwrite}
+                        disabled={isConfirmingOverwrite}
+                        className="bg-amber-600 hover:bg-amber-700 text-white text-xs"
+                      >
+                        {isConfirmingOverwrite ? "Updating Topic..." : "Replace Topic & Enable NexRep"}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Action Toolbar */}
               <div className="flex flex-wrap items-center gap-2.5 pt-2">
